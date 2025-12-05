@@ -1,8 +1,8 @@
 //! Ultra-Compact ART with arena-backed keys AND prefixes.
 //!
 //! This version stores both keys and prefixes in a shared arena:
-//! - Keys: 6-byte KeyRef instead of 24-byte Vec<u8>
-//! - Prefixes: 6-byte KeyRef instead of 24-byte Vec<u8>
+//! - Keys: 6-byte KeyRef instead of 24-byte `Vec<u8>`
+//! - Prefixes: 6-byte KeyRef instead of 24-byte `Vec<u8>`
 //! - Even more memory efficient than CompactArt
 
 use std::ops::{Bound, RangeBounds};

@@ -2,25 +2,38 @@
 //!
 //! A Rust library designed for storing billions of string keys with extreme memory efficiency.
 //!
+//! ## Key Results (967K URL Dataset)
+//!
+//! | Implementation | Memory | Bytes/Key | vs BTreeMap |
+//! |---------------|--------|-----------|-------------|
+//! | **FrozenLayer (FST)** | **40 MB** | **44** | **-65%** |
+//! | std::BTreeMap | 115 MB | 125 | baseline |
+//! | ArenaArt | 180 MB | 195 | +57% |
+//!
 //! ## Features
 //!
-//! - **Extreme memory efficiency**: Uses 5-10 bytes per key vs 60-80 for BTreeMap
+//! - **FrozenLayer (FST)**: 65% memory reduction for immutable data
 //! - **Point lookups**: O(key_length) lookups
 //! - **Range queries**: Efficient lexicographic range iteration
 //! - **Prefix scans**: Find all keys with a given prefix
-//! - **Hybrid architecture**: Mutable ART layer + immutable FST layer
 //!
-//! ## Architecture
+//! ## Example: Frozen Data (Best Memory Efficiency)
 //!
-//! The store uses a two-layer hybrid architecture:
+//! ```rust
+//! use memkv::FrozenLayer;
 //!
-//! 1. **Delta Layer (ART)**: An Adaptive Radix Tree for recent mutations.
-//!    Provides fast insertions with good memory efficiency.
+//! // Keys must be sorted for FST construction
+//! let data = vec![
+//!     (b"apple".as_slice(), 1u64),
+//!     (b"banana".as_slice(), 2u64),
+//!     (b"cherry".as_slice(), 3u64),
+//! ];
 //!
-//! 2. **Frozen Layer (FST)**: A Finite State Transducer for stable data.
-//!    Provides exceptional compression for read-mostly data.
+//! let frozen = FrozenLayer::from_sorted_iter(data).unwrap();
+//! assert_eq!(frozen.get(b"apple"), Some(1));
+//! ```
 //!
-//! ## Example
+//! ## Example: Mutable Data
 //!
 //! ```rust
 //! use memkv::MemKV;
@@ -30,11 +43,6 @@
 //! kv.insert(b"user:1002", 43u64);
 //!
 //! assert_eq!(kv.get(b"user:1001"), Some(42));
-//!
-//! // Range query
-//! for (key, value) in kv.range(b"user:1001", b"user:1003") {
-//!     println!("{:?} -> {}", key, value);
-//! }
 //! ```
 
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -44,9 +52,11 @@
 pub mod arena;
 pub mod art;
 pub mod art2;
+pub mod art_arena;
 pub mod art_compact;
 pub mod art_compact2;
 pub mod encoding;
+pub mod frozen;
 pub mod simple;
 
 pub use simple::SimpleKV;
@@ -54,6 +64,8 @@ pub use art::AdaptiveRadixTree;
 pub use art2::OptimizedART;
 pub use art_compact::{CompactArt, KeyRef};
 pub use art_compact2::{UltraCompactArt, DataRef, UltraNode};
+pub use art_arena::{ArenaArt, ArenaNode, ArenaArtStats};
+pub use frozen::{FrozenLayer, FrozenLayerBuilder, FrozenStats};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

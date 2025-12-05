@@ -7,7 +7,7 @@
 
 ## Current Status
 
-**Phase**: Phase 2 - Memory Optimization Complete ✓
+**Phase**: Phase 3 - Accurate Memory Measurement & Further Optimization
 **Date Started**: 2024-12-05
 **Last Updated**: 2024-12-05
 
@@ -19,31 +19,61 @@
 - [x] Implement ART node types (Node4, Node16, Node48, Node256)
 - [x] Implement ART insert/get/remove/prefix_scan
 - [x] Create SimpleKV (BTreeMap-based) fallback
-- [x] Fix ART Node48 restructuring bug (remove_child wasn't decrementing num_children)
-- [x] Fix ART remove_child to properly find key_byte in Node48
-- [x] Box Node256 children array (2048 bytes → 8 bytes on stack)
-- [x] Box Node48 child_index (256 bytes → 8 bytes on stack)
-- [x] Reduce Node enum size from 2112 bytes to 104 bytes
+- [x] Fix ART Node48 restructuring bug
+- [x] Box Node256 children array
+- [x] Box Node48 child_index
 - [x] Verify correctness with 1M URL dataset
-- [x] **CompactArt**: Arena-backed key storage (-37% memory vs BTreeMap)
-- [x] **UltraCompactArt**: Arena-backed keys AND prefixes (-73% memory vs BTreeMap!)
+- [x] **CompactArt**: Arena-backed key storage
+- [x] **UltraCompactArt**: Arena-backed keys AND prefixes
+- [x] **Add jemalloc for accurate memory measurement**
+- [x] **ArenaArt**: Vec-based node storage (no Box overhead)
 
-### Final Memory Performance (967K URLs, 49 MB raw)
+### FINAL RESULTS: Accurate Memory Measurements with jemalloc
+
+Using jemalloc's allocation tracking (967K URLs, 46 MB raw key data):
 
 | Implementation | Memory | Bytes/Key | vs BTreeMap |
 |---------------|--------|-----------|-------------|
-| std::BTreeMap | 122 MB | 133 | baseline |
-| **UltraCompactArt** | **62 MB** | **68** | **-49%** |
+| **FrozenLayer (FST)** | **40 MB** | **44** | **-65% (WINNER!)** |
+| std::BTreeMap | 115 MB | 125 | baseline |
+| ArenaArt | 180 MB | 195 | +57% |
+| UltraCompactArt | 192 MB | 208 | +67% |
 
-### Key Optimizations That Worked
-1. **Arena-backed keys** (CompactArt): Replace `Vec<u8>` with 6-byte `KeyRef` (offset + len)
-   - Saves 18 bytes per key (24 → 6)
+### Key Findings
 
-2. **Arena-backed prefixes** (UltraCompactArt): Also store prefixes in arena
-   - Uses `DataRef` for both keys and prefixes
-   - Reduced `UltraNode` enum size to 72 bytes
+1. **FST is the clear winner** for immutable/frozen data
+   - 23 MB pure FST size (25.5 bytes/key)
+   - 2x compression vs raw key data
+   - 65% less memory than BTreeMap
+   
+2. **ART is not competitive** for moderate-size datasets with average-length keys
+   - Too many nodes (1.46M for 967K keys)
+   - Per-allocation overhead dominates (48 bytes/node in jemalloc)
+   
+3. **BTreeMap is highly optimized** and hard to beat with tree structures
+   - High fanout (16-32 keys/node) → fewer nodes
+   - Std library is extremely well optimized
 
-3. **Fixed Node48 slot reuse bug**: When removing and re-adding children, slots in the children Vec must be reused to prevent unbounded growth and index overflow
+### Recommendations
+
+1. **For read-only/mostly data**: Use FST (FrozenLayer)
+   - Extreme compression
+   - Fast lookups and range queries
+   - Must provide sorted input
+   
+2. **For mutable data with range queries**: Use BTreeMap or ART
+   - BTreeMap is simpler and more memory efficient
+   - ART has advantages for very long keys with high prefix sharing
+   
+3. **For hybrid workloads**: Use FST for frozen base + mutable delta
+   - Periodic compaction merges delta into FST
+   - Best of both worlds
+
+### Optimizations Implemented
+
+1. **FrozenLayer (FST)**: Extreme compression via Finite State Transducers
+2. **ArenaArt**: Vec-based node storage (eliminates per-node allocation overhead)
+3. **jemalloc integration**: Accurate memory measurement via tikv-jemalloc-ctl
 
 ### Attempted But Not Successful
 - **art2 (OptimizedART)**: Stores only suffix in leaves instead of full key

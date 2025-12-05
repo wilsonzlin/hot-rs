@@ -2,7 +2,7 @@
 //!
 //! This variant uses arena allocation for keys to reduce memory overhead:
 //! - Keys stored in a contiguous arena with 6-byte references (offset + length)
-//! - Instead of 24-byte Vec<u8> per key
+//! - Instead of 24-byte `Vec<u8>` per key
 //! - Better cache locality for key data
 
 use std::ops::{Bound, RangeBounds};

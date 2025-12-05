@@ -2,42 +2,66 @@
 
 A Rust library designed for storing billions of string keys with extreme memory efficiency.
 
-## Features
-
-- **Adaptive Radix Tree (ART)**: Space-efficient trie with adaptive node sizes
-- **Arena-Backed Storage**: Keys and prefixes stored in contiguous memory with 6-byte references
-- **49% Memory Reduction**: Uses only 68 bytes/key vs 133 bytes/key for BTreeMap
-- **Concurrent Access**: Thread-safe with RwLock
-- **Rich Query API**: Single key lookup, range queries, prefix scans
-
-## Performance (967K URL Dataset, 49 MB raw data)
+## Key Results (967K URL Dataset, 46 MB raw data)
 
 | Implementation | Memory | Bytes/Key | vs BTreeMap |
 |---------------|--------|-----------|-------------|
-| std::BTreeMap | 122 MB | 133 | baseline |
-| **UltraCompactArt** | **62 MB** | **68** | **-49%** |
+| **FrozenLayer (FST)** | **40 MB** | **44** | **-65% ✓** |
+| std::BTreeMap | 115 MB | 125 | baseline |
+| ArenaArt | 180 MB | 195 | +57% |
+| UltraCompactArt | 192 MB | 208 | +67% |
 
-**UltraCompactArt achieves 49% memory reduction** vs BTreeMap while maintaining 100% correctness.
+**FrozenLayer achieves 65% memory reduction** vs BTreeMap for immutable data.
 
-## Usage
+## Features
+
+- **FrozenLayer (FST)**: Extreme compression for read-only data using Finite State Transducers
+- **ArenaArt**: Mutable ART with arena-based node storage
+- **Concurrent Access**: Thread-safe with RwLock wrapper
+- **Rich Query API**: Single key lookup, range queries, prefix scans
+- **Accurate Measurement**: jemalloc integration for precise memory tracking
+
+## Quick Start
+
+### For Read-Only/Frozen Data (Best Memory Efficiency)
 
 ```rust
-use memkv::UltraCompactArt;
+use memkv::FrozenLayer;
 
-let mut kv: UltraCompactArt<u64> = UltraCompactArt::new();
+// Keys must be sorted for FST construction
+let mut data: Vec<(&[u8], u64)> = vec![
+    (b"apple", 1),
+    (b"banana", 2),
+    (b"cherry", 3),
+];
+data.sort_by_key(|(k, _)| *k);
 
-// Insert key-value pairs
+let frozen = FrozenLayer::from_sorted_iter(data).unwrap();
+
+// Lookups
+assert_eq!(frozen.get(b"apple"), Some(1));
+
+// Prefix scans
+let results = frozen.prefix_scan(b"a");
+
+// Range queries
+let results = frozen.range(b"a", b"c");
+```
+
+### For Mutable Data
+
+```rust
+use memkv::ArenaArt;
+
+let mut kv: ArenaArt<u64> = ArenaArt::new();
+
 kv.insert(b"user:1001", 42);
 kv.insert(b"user:1002", 43);
 
-// Lookup
 assert_eq!(kv.get(b"user:1001"), Some(&42));
-
-// Prefix scan
-let users = kv.prefix_scan(b"user:");
 ```
 
-Or use the thread-safe `MemKV` wrapper:
+### Thread-Safe Wrapper
 
 ```rust
 use memkv::MemKV;
@@ -49,33 +73,44 @@ assert_eq!(kv.get(b"key"), Some(42));
 
 ## Architecture
 
-The library provides three ART implementations:
+### FrozenLayer (Recommended for read-only data)
 
-### UltraCompactArt (Recommended)
-- **Arena-backed keys AND prefixes**: All strings stored in a single contiguous arena
-- **6-byte DataRef**: Instead of 24-byte `Vec<u8>`, uses packed `(u32 offset, u16 len)`
-- **Best memory efficiency**: 68 bytes/key (49% less than BTreeMap)
+Uses **Finite State Transducers (FST)** for extreme compression:
+- ~25 bytes/key for URL dataset (2x compression vs raw)
+- O(key length) lookups
+- Efficient range queries and prefix scans
+- Must provide sorted input during construction
 
-### CompactArt
-- **Arena-backed keys only**: Keys in arena, prefixes as `Vec<u8>`
-- **Good balance**: 84 bytes/key (37% less than BTreeMap)
+### ArenaArt (For mutable data)
 
-### AdaptiveRadixTree (Original)
-- **Standard ART**: Traditional boxed node approach
-- **Compatible baseline**: 145 bytes/key
+**Adaptive Radix Tree** with arena-based node storage:
+- Nodes stored in contiguous Vec (no per-node allocation overhead)
+- Keys and prefixes in data arena with 6-byte references
+- Adaptive node sizing: Node4 → Node16 → Node48 → Node256
 
-All implementations use adaptive node sizing:
-- **Node4**: 1-4 children (most common, smallest footprint)
-- **Node16**: 5-16 children (sorted keys)
-- **Node48**: 17-48 children (256-byte index + pointers)
-- **Node256**: 49-256 children (direct array indexing)
+### Other Implementations
+
+- **UltraCompactArt**: Box-based nodes with arena-backed strings
+- **CompactArt**: Arena-backed keys only
+- **AdaptiveRadixTree**: Traditional ART implementation
+- **SimpleKV**: BTreeMap-based fallback
+
+## When to Use What
+
+| Use Case | Recommendation | Memory |
+|----------|----------------|--------|
+| Read-only data | FrozenLayer | ~44 bytes/key |
+| Mutable + range queries | BTreeMap or ArenaArt | ~125-195 bytes/key |
+| Very long keys + prefixes | ArenaArt | Good prefix compression |
+| Hybrid workloads | FST base + mutable delta | Best of both |
 
 ## Memory Optimization Techniques
 
-1. **Arena Allocation**: Keys and prefixes stored in contiguous memory
-2. **Packed References**: 6-byte `DataRef` vs 24-byte `Vec<u8>` (saves 18 bytes per string)
-3. **Boxing Large Arrays**: Node256's children array on heap to reduce enum size
-4. **Prefix Compression**: Common prefixes stored once in tree structure
+1. **FST Compression**: Finite State Transducers for immutable data
+2. **Arena Allocation**: Nodes in contiguous Vec, strings in data arena
+3. **Packed References**: 6-byte `DataRef` vs 24-byte `Vec<u8>`
+4. **Boxing Large Arrays**: Reduces enum size to 56 bytes
+5. **jemalloc**: Accurate allocation tracking via tikv-jemalloc-ctl
 
 ## Project Structure
 
@@ -83,15 +118,25 @@ All implementations use adaptive node sizing:
 memkv/
 ├── src/
 │   ├── lib.rs           # Public API
-│   ├── art/             # Original ART implementation
-│   ├── art_compact/     # Arena-backed keys
-│   ├── art_compact2/    # Arena-backed keys + prefixes (best)
+│   ├── frozen/          # FST-based frozen layer (best!)
+│   ├── art_arena/       # Arena-based ART
+│   ├── art_compact2/    # Box-based ART with arena strings
 │   ├── arena/           # Arena allocator
-│   └── simple.rs        # BTreeMap-based fallback
+│   └── simple.rs        # BTreeMap fallback
 ├── examples/
-│   ├── compare_memory.rs   # Memory comparison benchmark
-│   └── url_dataset.rs      # URL dataset benchmark
+│   ├── compare_all.rs   # Complete memory comparison
+│   └── url_dataset.rs   # URL dataset benchmark
 └── benches/             # Criterion benchmarks
+```
+
+## Benchmarking
+
+```bash
+# Run complete memory comparison
+cargo run --release --example compare_all
+
+# Run with jemalloc for accurate measurements
+cargo run --release --example compare_all
 ```
 
 ## Documentation
@@ -101,8 +146,8 @@ memkv/
 
 ## Future Work
 
-- [ ] Child pointer compression (32-bit offsets in arena)
-- [ ] FST integration for frozen/immutable data
+- [ ] Hybrid store combining FST + mutable delta
+- [ ] Incremental FST updates
 - [ ] SIMD optimizations for Node16 lookup
 - [ ] Concurrent writes with epoch-based reclamation
 

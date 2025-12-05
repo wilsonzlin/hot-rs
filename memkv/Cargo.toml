@@ -43,6 +43,10 @@ tempfile = "3"
 # Memory profiling
 memory-stats = "1.0"
 
+# Accurate memory allocation tracking
+tikv-jemallocator = "0.5"
+tikv-jemalloc-ctl = "0.5"
+
 [[bench]]
 name = "baseline"
 harness = false

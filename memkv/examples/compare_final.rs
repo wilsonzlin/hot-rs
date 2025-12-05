@@ -1,98 +1,127 @@
-//! Final comparison of memory usage
-//! 
-//! Note: This measures each structure from a fresh baseline.
-//! Due to allocator behavior, the second measurement may reuse
-//! memory from the first. For accurate isolated measurements,
-//! run each test in a separate process.
+//! Final comparison of memory usage using jemalloc for accurate stats
 
 use std::collections::BTreeMap;
+use tikv_jemalloc_ctl::{epoch, stats};
 
-fn get_process_memory() -> usize {
-    if let Ok(contents) = std::fs::read_to_string("/proc/self/statm") {
-        let parts: Vec<&str> = contents.split_whitespace().collect();
-        if parts.len() >= 2 {
-            if let Ok(pages) = parts[1].parse::<usize>() {
-                let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-                return pages * page_size;
-            }
-        }
-    }
-    0
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+fn get_allocated_bytes() -> usize {
+    epoch::advance().unwrap();
+    stats::allocated::read().unwrap()
 }
 
 fn main() {
     let content = std::fs::read_to_string("urls_sample.txt").unwrap();
     let urls: Vec<String> = content.lines().map(|s| s.to_string()).collect();
     let count = urls.len();
-    let data_size = urls.iter().map(|s| s.len()).sum::<usize>();
+    let data_size: usize = urls.iter().map(|s| s.len()).sum();
     
-    println!("=== Memory Comparison ({} URLs, {} MB raw data) ===\n", 
+    println!("=== Memory Comparison ({} URLs, {} MB raw data) ===", 
              count, data_size / (1024 * 1024));
+    println!("Using jemalloc for accurate allocation tracking\n");
     
-    // Initial baseline (includes url Vec)
-    let initial_baseline = get_process_memory();
-    println!("Baseline (program + URL data): {} MB\n", initial_baseline / (1024 * 1024));
+    // Baseline after loading URLs
+    let baseline = get_allocated_bytes();
+    println!("Baseline (after loading URLs): {} MB\n", baseline / (1024 * 1024));
     
-    // Test BTreeMap first
-    let before_btree = get_process_memory();
+    // Test BTreeMap
+    println!("--- BTreeMap ---");
+    let before_btree = get_allocated_bytes();
     let mut btree: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
     for (i, url) in urls.iter().enumerate() {
         btree.insert(url.as_bytes().to_vec(), i as u64);
     }
-    let after_btree = get_process_memory();
-    let btree_mem = after_btree - before_btree;
+    let after_btree = get_allocated_bytes();
+    let btree_alloc = after_btree - before_btree;
     
-    // Verify correctness
     let btree_correct = urls.iter().enumerate()
         .filter(|(i, url)| btree.get(url.as_bytes()) == Some(&(*i as u64)))
         .count();
     
-    println!("BTreeMap:");
-    println!("  Memory delta: {} MB ({:.1} bytes/key)", 
-             btree_mem / (1024 * 1024), btree_mem as f64 / count as f64);
+    println!("  Allocated: {} MB ({:.1} bytes/key)", 
+             btree_alloc / (1024 * 1024), btree_alloc as f64 / count as f64);
     println!("  Correctness: {}/{}", btree_correct, count);
     
-    // Keep btree alive, test UltraCompactArt
+    drop(btree);
+    let _ = get_allocated_bytes(); // Let jemalloc return memory
+    
+    // Test ArenaArt (new arena-based implementation)
+    println!("\n--- ArenaArt (arena-based nodes) ---");
+    use memkv::ArenaArt;
+    
+    let before_arena = get_allocated_bytes();
+    let mut arena_art: ArenaArt<u64> = ArenaArt::new();
+    for (i, url) in urls.iter().enumerate() {
+        arena_art.insert(url.as_bytes(), i as u64);
+    }
+    let after_arena = get_allocated_bytes();
+    let arena_alloc = after_arena - before_arena;
+    
+    let arena_correct = urls.iter().enumerate()
+        .filter(|(i, url)| arena_art.get(url.as_bytes()) == Some(&(*i as u64)))
+        .count();
+    
+    let arena_stats = arena_art.memory_stats();
+    
+    println!("  Allocated: {} MB ({:.1} bytes/key)", 
+             arena_alloc / (1024 * 1024), arena_alloc as f64 / count as f64);
+    println!("  Correctness: {}/{}", arena_correct, count);
+    println!("  Internal breakdown:");
+    println!("    Data arena: {} MB", arena_stats.data_arena_bytes / (1024 * 1024));
+    println!("    Node arena: {} MB", arena_stats.node_arena_capacity / (1024 * 1024));
+    println!("    Nodes: {} total ({} leaves, {} N4, {} N16, {} N48, {} N256)",
+             arena_stats.node_count,
+             arena_stats.leaf_count, arena_stats.node4_count, 
+             arena_stats.node16_count, arena_stats.node48_count, arena_stats.node256_count);
+    
+    drop(arena_art);
+    let _ = get_allocated_bytes();
+    
+    // Test UltraCompactArt (Box-based nodes)
+    println!("\n--- UltraCompactArt (Box-based nodes) ---");
     use memkv::UltraCompactArt;
     
-    let before_ultra = get_process_memory();
+    let before_ultra = get_allocated_bytes();
     let mut ultra: UltraCompactArt<u64> = UltraCompactArt::new();
     for (i, url) in urls.iter().enumerate() {
         ultra.insert(url.as_bytes(), i as u64);
     }
-    let after_ultra = get_process_memory();
-    let ultra_mem = after_ultra - before_ultra;
+    let after_ultra = get_allocated_bytes();
+    let ultra_alloc = after_ultra - before_ultra;
     
-    // Verify correctness
     let ultra_correct = urls.iter().enumerate()
         .filter(|(i, url)| ultra.get(url.as_bytes()) == Some(&(*i as u64)))
         .count();
     
-    let stats = ultra.memory_stats();
+    let ultra_stats = ultra.memory_stats();
     
-    println!("\nUltraCompactArt:");
-    println!("  Memory delta: {} MB ({:.1} bytes/key)", 
-             ultra_mem / (1024 * 1024), ultra_mem as f64 / count as f64);
+    println!("  Allocated: {} MB ({:.1} bytes/key)", 
+             ultra_alloc / (1024 * 1024), ultra_alloc as f64 / count as f64);
     println!("  Correctness: {}/{}", ultra_correct, count);
-    println!("  Arena (keys+prefixes): {} MB", stats.arena_bytes / (1024 * 1024));
+    println!("  Internal breakdown:");
+    println!("    Arena: {} MB", ultra_stats.arena_bytes / (1024 * 1024));
+    println!("    Nodes: {} leaves, {} N4, {} N16, {} N48, {} N256",
+             ultra_stats.leaf_count, ultra_stats.node4_count, 
+             ultra_stats.node16_count, ultra_stats.node48_count, ultra_stats.node256_count);
     
-    // Total memory with both structures alive
-    let total = get_process_memory();
-    println!("\nTotal memory (both structures): {} MB", total / (1024 * 1024));
-    println!("  BTreeMap contribution: {} MB", btree_mem / (1024 * 1024));
-    println!("  UltraCompactArt contribution: {} MB", ultra_mem / (1024 * 1024));
+    // Summary
+    println!("\n=== Summary ===");
+    println!("  BTreeMap:        {} MB ({:.1} bytes/key)", 
+             btree_alloc / (1024 * 1024), btree_alloc as f64 / count as f64);
+    println!("  ArenaArt:        {} MB ({:.1} bytes/key)", 
+             arena_alloc / (1024 * 1024), arena_alloc as f64 / count as f64);
+    println!("  UltraCompactArt: {} MB ({:.1} bytes/key)", 
+             ultra_alloc / (1024 * 1024), ultra_alloc as f64 / count as f64);
     
-    // Comparison
-    println!("\n=== Comparison ===");
-    if ultra_mem < btree_mem {
-        let savings = 100.0 * (1.0 - ultra_mem as f64 / btree_mem as f64);
-        println!("  UltraCompactArt uses {:.0}% less memory than BTreeMap", savings);
+    if arena_alloc < btree_alloc {
+        let savings = 100.0 * (1.0 - arena_alloc as f64 / btree_alloc as f64);
+        println!("\n  ArenaArt uses {:.1}% LESS memory than BTreeMap!", savings);
     } else {
-        let increase = 100.0 * (ultra_mem as f64 / btree_mem as f64 - 1.0);
-        println!("  UltraCompactArt uses {:.0}% more memory than BTreeMap", increase);
+        let overhead = 100.0 * (arena_alloc as f64 / btree_alloc as f64 - 1.0);
+        println!("\n  ArenaArt uses {:.1}% more memory than BTreeMap", overhead);
     }
     
-    // Keep both alive
-    println!("\nBTreeMap len: {}", btree.len());
-    println!("UltraCompactArt len: {}", ultra.len());
+    // Keep alive for measurement
+    println!("\n  UltraCompact len: {}", ultra.len());
 }
