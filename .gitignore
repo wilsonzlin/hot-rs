@@ -1,0 +1,34 @@
+# Test/benchmark data files
+*.txt
+urls_*.txt
+
+# Cloned external repositories (for comparison/reference only)
+duckdb-src/
+libart/
+
+# Build artifacts
+target/
+*.rlib
+*.rmeta
+
+# Core dumps
+core
+core.*
+*.core
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Profiling output
+*.prof
+*.profdata
+perf.data*
+flamegraph.svg
+
+# OS-specific
+Thumbs.db
