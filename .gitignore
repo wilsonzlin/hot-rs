@@ -1,0 +1,49 @@
+# Test/benchmark data files
+*.txt
+!README.txt
+urls*.txt
+
+# Cloned external repositories (for comparison/reference only)
+duckdb-src/
+libart/
+
+# Build artifacts
+target/
+**/target/
+*.rlib
+*.rmeta
+*.d
+*.so
+*.dylib
+*.dll
+
+# Cargo lock (library, not application)
+Cargo.lock
+**/Cargo.lock
+
+# Core dumps
+core
+core.*
+*.core
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Profiling output
+*.prof
+*.profdata
+perf.data*
+flamegraph.svg
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
