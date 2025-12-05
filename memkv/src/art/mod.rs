@@ -9,6 +9,7 @@
 //! - Optimized for modern CPU caches
 
 mod node;
+mod debug;
 
 use std::ops::{Bound, RangeBounds};
 

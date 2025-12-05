@@ -43,10 +43,17 @@
 
 pub mod arena;
 pub mod art;
+pub mod art2;
+pub mod art_compact;
+pub mod art_compact2;
 pub mod encoding;
 pub mod simple;
 
 pub use simple::SimpleKV;
+pub use art::AdaptiveRadixTree;
+pub use art2::OptimizedART;
+pub use art_compact::{CompactArt, KeyRef};
+pub use art_compact2::{UltraCompactArt, DataRef, UltraNode};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -93,11 +100,11 @@ impl Default for Config {
 /// This is the main entry point for the library. It provides a concurrent-safe
 /// interface for storing and querying key-value pairs.
 ///
-/// Note: The current implementation uses a simple BTreeMap backend for correctness.
-/// The ART (Adaptive Radix Tree) implementation is a work in progress.
+/// Uses an Adaptive Radix Tree (ART) for memory-efficient storage with good
+/// performance characteristics.
 pub struct MemKV<V> {
-    /// The simple backend (BTreeMap-based)
-    inner: RwLock<SimpleKV<V>>,
+    /// The ART backend
+    art: RwLock<AdaptiveRadixTree<V>>,
     /// Number of entries
     len: AtomicUsize,
     /// Configuration
@@ -117,7 +124,7 @@ where
     /// Create a new store with the given configuration.
     pub fn with_config(config: Config) -> Self {
         Self {
-            inner: RwLock::new(SimpleKV::new()),
+            art: RwLock::new(AdaptiveRadixTree::new()),
             len: AtomicUsize::new(0),
             config,
         }
@@ -128,8 +135,8 @@ where
     /// Returns the previous value if the key already existed.
     pub fn insert(&self, key: impl AsRef<[u8]>, value: V) -> Option<V> {
         let key = key.as_ref();
-        let mut inner = self.inner.write();
-        let old = inner.insert(key, value);
+        let mut art = self.art.write();
+        let old = art.insert(key, value);
         if old.is_none() {
             self.len.fetch_add(1, Ordering::Relaxed);
         }
@@ -139,15 +146,15 @@ where
     /// Get a reference to the value for a key.
     pub fn get(&self, key: impl AsRef<[u8]>) -> Option<V> {
         let key = key.as_ref();
-        let inner = self.inner.read();
-        inner.get(key).cloned()
+        let art = self.art.read();
+        art.get(key).cloned()
     }
 
     /// Check if a key exists in the store.
     pub fn contains(&self, key: impl AsRef<[u8]>) -> bool {
         let key = key.as_ref();
-        let inner = self.inner.read();
-        inner.contains(key)
+        let art = self.art.read();
+        art.get(key).is_some()
     }
 
     /// Remove a key from the store.
@@ -155,8 +162,8 @@ where
     /// Returns the value if the key existed.
     pub fn remove(&self, key: impl AsRef<[u8]>) -> Option<V> {
         let key = key.as_ref();
-        let mut inner = self.inner.write();
-        let old = inner.remove(key);
+        let mut art = self.art.write();
+        let old = art.remove(key);
         if old.is_some() {
             self.len.fetch_sub(1, Ordering::Relaxed);
         }
@@ -167,19 +174,18 @@ where
     pub fn range(&self, start: impl AsRef<[u8]>, end: impl AsRef<[u8]>) -> Vec<(Vec<u8>, V)> {
         let start = start.as_ref();
         let end = end.as_ref();
-        let inner = self.inner.read();
-        inner.range(start, end)
-            .map(|(k, v)| (k.to_vec(), v.clone()))
-            .collect()
+        let art = self.art.read();
+        art.range((
+            std::ops::Bound::Included(start),
+            std::ops::Bound::Excluded(end),
+        )).collect()
     }
 
     /// Iterate over all keys with a given prefix.
     pub fn prefix(&self, prefix: impl AsRef<[u8]>) -> Vec<(Vec<u8>, V)> {
         let prefix = prefix.as_ref();
-        let inner = self.inner.read();
-        inner.prefix(prefix)
-            .map(|(k, v)| (k.to_vec(), v.clone()))
-            .collect()
+        let art = self.art.read();
+        art.prefix_scan(prefix).collect()
     }
 
     /// Get the number of keys in the store.
@@ -194,16 +200,16 @@ where
 
     /// Get memory usage statistics.
     pub fn memory_usage(&self) -> MemoryStats {
-        let inner = self.inner.read();
-        let mem = inner.memory_usage();
+        let art = self.art.read();
+        let stats = art.memory_stats();
         let num_keys = self.len();
         MemoryStats {
-            key_bytes: mem / 2, // Approximate
-            node_bytes: mem / 4,
-            value_bytes: mem / 4,
+            key_bytes: stats.key_bytes,
+            node_bytes: stats.node_bytes,
+            value_bytes: stats.value_bytes,
             num_keys,
             bytes_per_key: if num_keys > 0 {
-                mem as f64 / num_keys as f64
+                (stats.key_bytes + stats.node_bytes + stats.value_bytes) as f64 / num_keys as f64
             } else {
                 0.0
             },

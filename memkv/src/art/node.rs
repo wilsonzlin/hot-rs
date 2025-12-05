@@ -69,8 +69,8 @@ pub enum Node<V> {
         prefix: Vec<u8>,
         /// Number of valid children.
         num_children: u8,
-        /// Index mapping bytes to child positions (255 = empty).
-        child_index: [u8; 256],
+        /// Index mapping bytes to child positions (255 = empty). Boxed to reduce enum size.
+        child_index: Box<[u8; 256]>,
         /// Child nodes.
         children: Vec<Box<Node<V>>>,
         /// Optional value if a key ends at this node.
@@ -83,8 +83,8 @@ pub enum Node<V> {
         prefix: Vec<u8>,
         /// Number of valid children.
         num_children: u16,
-        /// Child nodes (direct indexing by byte).
-        children: [Option<Box<Node<V>>>; 256],
+        /// Child nodes (direct indexing by byte). Boxed to reduce enum size.
+        children: Box<[Option<Box<Node<V>>>; 256]>,
         /// Optional value if a key ends at this node.
         leaf_value: Option<(Vec<u8>, Box<Node<V>>)>,
     },
@@ -123,21 +123,18 @@ impl<V> Node<V> {
         Node::Node48 {
             prefix: Vec::new(),
             num_children: 0,
-            child_index: [255; 256],
+            child_index: Box::new([255; 256]),
             children: Vec::with_capacity(48),
             leaf_value: None,
         }
     }
 
     /// Create a new Node256.
-    #[allow(clippy::declare_interior_mutable_const)]
     pub fn new_node256() -> Self {
-        const NONE: Option<Box<Node<()>>> = None;
-        // This is a bit awkward but necessary for const initialization
         Node::Node256 {
             prefix: Vec::new(),
             num_children: 0,
-            children: std::array::from_fn(|_| None),
+            children: Box::new(std::array::from_fn(|_| None)),
             leaf_value: None,
         }
     }
@@ -320,15 +317,41 @@ impl<V> Node<V> {
             
             Node::Node48 { child_index, num_children, children, .. } => {
                 let existing_idx = child_index[key as usize];
-                if existing_idx != 255 {
+                if existing_idx != 255 && (existing_idx as usize) < children.len() {
                     // Key exists, replace
                     children[existing_idx as usize] = child;
                 } else if (*num_children as usize) < 48 {
-                    // Find first empty slot in children
-                    let slot = children.len();
-                    child_index[key as usize] = slot as u8;
-                    children.push(child);
-                    *num_children += 1;
+                    // Key doesn't exist, add new
+                    // First, try to find an empty slot from previous removals
+                    let mut free_slot = None;
+                    for i in 0..children.len() {
+                        let mut in_use = false;
+                        for &idx in child_index.iter() {
+                            if idx != 255 && idx as usize == i {
+                                in_use = true;
+                                break;
+                            }
+                        }
+                        if !in_use {
+                            free_slot = Some(i);
+                            break;
+                        }
+                    }
+                    
+                    if let Some(slot) = free_slot {
+                        // Reuse empty slot
+                        children[slot] = child;
+                        child_index[key as usize] = slot as u8;
+                        *num_children += 1;
+                    } else if children.len() < 48 {
+                        // No empty slot, but Vec has room - push
+                        let slot = children.len();
+                        child_index[key as usize] = slot as u8;
+                        children.push(child);
+                        *num_children += 1;
+                    } else {
+                        panic!("Node48: no empty slot found and Vec is full");
+                    }
                 } else {
                     panic!("Node48 is full, should grow first");
                 }
@@ -405,17 +428,23 @@ impl<V> Node<V> {
             
             Node::Node48 { child_index, num_children, children, .. } => {
                 // Find the key that maps to this index
-                let mut key_byte = 0;
+                let mut key_byte = None;
                 for (k, &i) in child_index.iter().enumerate() {
-                    if i as usize == idx {
-                        key_byte = k;
+                    if i != 255 && i as usize == idx {
+                        key_byte = Some(k);
                         break;
                     }
                 }
                 
                 let child = std::mem::replace(&mut children[idx], Box::new(Node::new_node4()));
-                child_index[key_byte] = 255; // Mark as empty
-                *num_children -= 1;
+                
+                if let Some(kb) = key_byte {
+                    child_index[kb] = 255; // Mark as empty
+                    *num_children -= 1;
+                } else {
+                    // This shouldn't happen - indicates a bug
+                    eprintln!("WARNING: Node48 remove_child couldn't find key_byte for idx {}", idx);
+                }
                 
                 child
             }
@@ -449,7 +478,7 @@ impl<V> Node<V> {
     /// Grow Node16 to Node48.
     fn grow_to_node48(&mut self, stats: &mut ArtMemoryStats) {
         if let Node::Node16 { prefix, keys, num_children, children, leaf_value, .. } = self {
-            let mut child_index = [255u8; 256];
+            let mut child_index = Box::new([255u8; 256]);
             for i in 0..*num_children as usize {
                 child_index[keys[i] as usize] = i as u8;
             }
@@ -470,7 +499,7 @@ impl<V> Node<V> {
     /// Grow Node48 to Node256.
     fn grow_to_node256(&mut self, stats: &mut ArtMemoryStats) {
         if let Node::Node48 { prefix, child_index, num_children, children, leaf_value, .. } = self {
-            let mut new_children: [Option<Box<Node<V>>>; 256] = std::array::from_fn(|_| None);
+            let mut new_children: Box<[Option<Box<Node<V>>>; 256]> = Box::new(std::array::from_fn(|_| None));
             
             for (byte, &idx) in child_index.iter().enumerate() {
                 if idx != 255 && (idx as usize) < children.len() {
