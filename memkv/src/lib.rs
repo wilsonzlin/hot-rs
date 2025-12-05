@@ -57,9 +57,14 @@ pub mod art_compact;
 pub mod art_compact2;
 pub mod art_lean;
 pub mod art_optimized;
+pub mod art_ultra;
+pub mod art_fast;
 pub mod encoding;
 pub mod frozen;
 pub mod simple;
+
+#[cfg(feature = "libart")]
+pub mod libart_ffi;
 
 pub use simple::SimpleKV;
 pub use art::AdaptiveRadixTree;
@@ -70,6 +75,8 @@ pub use art_arena::{ArenaArt, ArenaNode, ArenaArtStats};
 pub use frozen::{FrozenLayer, FrozenLayerBuilder, FrozenStats};
 pub use art_optimized::{OptimizedArt, OptArtStats};
 pub use art_lean::{LeanArt, LeanStats};
+pub use art_ultra::{UltraArt, UltraArtStats};
+pub use art_fast::FastArt;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

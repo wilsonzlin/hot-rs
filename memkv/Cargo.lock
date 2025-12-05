@@ -354,6 +354,7 @@ dependencies = [
  "art",
  "art-tree",
  "blart",
+ "cc",
  "criterion",
  "fst",
  "libc",
