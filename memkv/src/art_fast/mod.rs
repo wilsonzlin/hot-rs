@@ -246,8 +246,58 @@ impl Node16 {
         }
     }
     
+    /// Find child using SIMD when available
     #[inline]
     pub fn find_child(&self, byte: u8) -> Option<TaggedPtr> {
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+        {
+            return self.find_child_simd(byte);
+        }
+        
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+        {
+            self.find_child_scalar(byte)
+        }
+    }
+    
+    /// SIMD-optimized child lookup using SSE2
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    #[inline]
+    fn find_child_simd(&self, byte: u8) -> Option<TaggedPtr> {
+        use std::arch::x86_64::*;
+        
+        let n = self.header.num_children as usize;
+        if n == 0 {
+            return None;
+        }
+        
+        unsafe {
+            // Load 16 bytes of keys
+            let keys_vec = _mm_loadu_si128(self.keys.as_ptr() as *const __m128i);
+            // Create vector of search byte
+            let search = _mm_set1_epi8(byte as i8);
+            // Compare equal
+            let cmp = _mm_cmpeq_epi8(keys_vec, search);
+            // Get mask of matching positions
+            let mask = _mm_movemask_epi8(cmp) as u32;
+            
+            // Mask off invalid positions (beyond num_children)
+            let valid_mask = (1u32 << n) - 1;
+            let result = mask & valid_mask;
+            
+            if result != 0 {
+                // Return first matching child
+                let idx = result.trailing_zeros() as usize;
+                Some(self.children[idx])
+            } else {
+                None
+            }
+        }
+    }
+    
+    /// Scalar fallback for finding child
+    #[inline]
+    fn find_child_scalar(&self, byte: u8) -> Option<TaggedPtr> {
         let n = self.header.num_children as usize;
         for i in 0..n {
             if self.keys[i] == byte {
@@ -257,8 +307,51 @@ impl Node16 {
         None
     }
     
+    /// Find child index using SIMD when available
     #[inline]
     pub fn find_child_idx(&self, byte: u8) -> Option<usize> {
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+        {
+            return self.find_child_idx_simd(byte);
+        }
+        
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+        {
+            self.find_child_idx_scalar(byte)
+        }
+    }
+    
+    /// SIMD-optimized child index lookup
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    #[inline]
+    fn find_child_idx_simd(&self, byte: u8) -> Option<usize> {
+        use std::arch::x86_64::*;
+        
+        let n = self.header.num_children as usize;
+        if n == 0 {
+            return None;
+        }
+        
+        unsafe {
+            let keys_vec = _mm_loadu_si128(self.keys.as_ptr() as *const __m128i);
+            let search = _mm_set1_epi8(byte as i8);
+            let cmp = _mm_cmpeq_epi8(keys_vec, search);
+            let mask = _mm_movemask_epi8(cmp) as u32;
+            
+            let valid_mask = (1u32 << n) - 1;
+            let result = mask & valid_mask;
+            
+            if result != 0 {
+                Some(result.trailing_zeros() as usize)
+            } else {
+                None
+            }
+        }
+    }
+    
+    /// Scalar fallback for finding child index
+    #[inline]
+    fn find_child_idx_scalar(&self, byte: u8) -> Option<usize> {
         let n = self.header.num_children as usize;
         for i in 0..n {
             if self.keys[i] == byte {

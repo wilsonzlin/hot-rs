@@ -70,11 +70,14 @@ pub mod art2;
 pub mod art_arena;
 pub mod art_compact;
 pub mod art_compact2;
+pub mod art_compact_ptr;
 pub mod art_lean;
 pub mod art_optimized;
 pub mod art_ultra;
 pub mod art_fast;
+pub mod art_hot;
 pub mod encoding;
+pub mod front_coded;
 pub mod frozen;
 pub mod simple;
 
@@ -92,6 +95,8 @@ pub use art_optimized::{OptimizedArt, OptArtStats};
 pub use art_lean::{LeanArt, LeanStats};
 pub use art_ultra::{UltraArt, UltraArtStats};
 pub use art_fast::FastArt;
+pub use art_hot::HotArt;
+pub use front_coded::{FrontCodedIndex, FrontCodedBuilder, FrontCodedStats};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

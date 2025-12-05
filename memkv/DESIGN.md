@@ -237,9 +237,10 @@ For memory-efficient key-value storage of string keys:
 
 | Use Case | Recommendation | Overhead/Key |
 |----------|----------------|--------------|
-| Immutable data | FrozenLayer (FST) | -16 bytes (compression!) |
-| Mutable data | FastArt | 63 bytes |
-| Simple/portable | BTreeMap | 75 bytes |
+| Immutable data | FrozenLayer (FST) | **-52.8 bytes** (compression!) |
+| Sorted immutable | FrontCodedIndex | **-23.3 bytes** (compression) |
+| Mutable data | FastArt | ~45.6 bytes |
+| Simple/portable | BTreeMap | ~79 bytes |
 
 **FastArt achieves our goal of beating libart (C)** while providing:
 - 13% less memory overhead (63 vs 72 bytes/key)
@@ -247,7 +248,36 @@ For memory-efficient key-value storage of string keys:
 - Comparable insert performance (4.9M vs 5.0M ops/sec)
 - Pure Rust, no unsafe C dependencies
 
-The original target of <10 bytes overhead per key is achievable with FST for immutable data. For mutable structures, ~63 bytes overhead is excellent and competitive with the best C implementations.
+**New implementations added:**
+
+1. **HotArt** - HOT-inspired implementation with compound nodes (~49.7 bytes overhead)
+2. **FrontCodedIndex** - Front-coded (prefix compression) for sorted keys (-23.3 bytes overhead)
+3. **SIMD Node16** - SSE2-optimized child lookup for FastArt
+
+---
+
+## Memory Efficiency Summary (1M URL-like keys, 50MB raw data)
+
+| Implementation | Memory | Overhead/Key | Correctness | Notes |
+|----------------|--------|--------------|-------------|-------|
+| **FrozenLayer (FST)** | ~0 MB | **-52.8 bytes** | 100% | Immutable, 326x compression |
+| **FrontCodedIndex** | 28 MB | **-23.3 bytes** | 100% | Immutable, sorted input |
+| **FastArt** | 93 MB | 45.5 bytes | 100% | Best mutable |
+| **HotArt** | 97 MB | 49.7 bytes | 100% | HOT-inspired |
+| **BTreeMap** | 125 MB | 79.1 bytes | 100% | Baseline |
+
+---
+
+## Next Steps for Further Optimization
+
+Based on the researcher's suggestions, to achieve HOT's 11-14 bytes/key target:
+
+1. **Pointer compression with arena allocation** - Use 4-byte offsets instead of 8-byte pointers
+2. **Variable discriminator bits** - True HOT-style dynamic span based on data distribution
+3. **Hybrid FST+ART** - Use FST for cold data, ART for hot delta
+4. **PEXT/PDEP SIMD** - Hardware bit manipulation for key extraction
+
+---
 
 **Compared to other Rust ART crates**, FastArt is:
 - **2.6x better** than art-tree (best external crate)
