@@ -137,6 +137,7 @@ impl FrozenLayer {
         self.len
     }
     
+    /// Returns true if the layer contains no keys.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

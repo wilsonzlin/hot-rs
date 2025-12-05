@@ -1,12 +1,13 @@
-//! Fast ART implementation inspired by libart (C)
+//! Adaptive Radix Tree inspired by libart.
 //!
-//! Key optimizations from libart:
-//! 1. Pointer tagging - low bit distinguishes leaf vs internal node
-//! 2. Inline key storage - keys embedded in leaf allocations
-//! 3. Compact node headers - only 16 bytes
-//! 4. SSE2 for Node16 lookup
+//! Key optimizations:
+//! - Pointer tagging: low bit distinguishes leaf vs internal node
+//! - Inline key storage: keys embedded directly in leaf allocations
+//! - Compact headers: 16 bytes per node
+//! - Adaptive node sizing: Node4/16/48/256
 
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(dead_code)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr::NonNull;
@@ -371,30 +372,47 @@ impl Node256 {
     }
 }
 
-/// Fast ART with libart-style optimizations
+/// Adaptive Radix Tree with libart-style optimizations.
+///
+/// A memory-efficient mutable key-value store using an Adaptive Radix Tree.
+/// Values are u64 (use as indices into external storage for larger values).
+///
+/// # Example
+///
+/// ```
+/// use memkv::FastArt;
+///
+/// let mut art = FastArt::new();
+/// art.insert(b"key", 42);
+/// assert_eq!(art.get(b"key"), Some(42));
+/// ```
 pub struct FastArt {
     root: TaggedPtr,
     size: usize,
 }
 
 impl FastArt {
+    /// Create an empty tree.
     pub fn new() -> Self {
         Self {
             root: TaggedPtr::null(),
             size: 0,
         }
     }
-    
+
+    /// Returns the number of keys in the tree.
     #[inline]
     pub fn len(&self) -> usize {
         self.size
     }
-    
+
+    /// Returns true if the tree is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
-    
+
+    /// Look up a key and return its value.
     pub fn get(&self, key: &[u8]) -> Option<u64> {
         // Add terminating byte like libart
         let mut key_with_term = Vec::with_capacity(key.len() + 1);
@@ -534,6 +552,7 @@ impl FastArt {
         }
     }
     
+    /// Insert a key-value pair. Returns the previous value if the key existed.
     pub fn insert(&mut self, key: &[u8], value: u64) -> Option<u64> {
         // Add terminating byte like libart
         let mut key_with_term = Vec::with_capacity(key.len() + 1);
