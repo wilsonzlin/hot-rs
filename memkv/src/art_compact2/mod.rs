@@ -323,22 +323,22 @@ impl<V> UltraNode<V> {
                         children.push(child);
                         slot
                     } else {
-                        // Find a dummy slot to reuse (a slot that no longer has a valid child_index entry)
-                        let mut reuse_slot = None;
-                        for i in 0..children.len() {
-                            let mut in_use = false;
-                            for &idx in child_index.iter() {
-                                if idx != 255 && idx as usize == i {
-                                    in_use = true;
-                                    break;
-                                }
+                        // Build bitmap of used slots - O(256) instead of O(48 * 256)
+                        let mut used = [false; 48];
+                        for &idx in child_index.iter() {
+                            if idx != 255 && (idx as usize) < 48 {
+                                used[idx as usize] = true;
                             }
-                            if !in_use {
-                                reuse_slot = Some(i);
+                        }
+                        // Find first free slot - O(48)
+                        let mut free_slot = None;
+                        for i in 0..children.len().min(48) {
+                            if !used[i] {
+                                free_slot = Some(i);
                                 break;
                             }
                         }
-                        if let Some(slot) = reuse_slot {
+                        if let Some(slot) = free_slot {
                             children[slot] = child;
                             slot
                         } else {
@@ -348,9 +348,7 @@ impl<V> UltraNode<V> {
                             slot
                         }
                     };
-                    if slot > 255 {
-                        panic!("Node48 slot overflow: slot={}, children.len()={}", slot, children.len());
-                    }
+                    debug_assert!(slot <= 255, "Node48 slot overflow");
                     child_index[key as usize] = slot as u8;
                     *num_children += 1;
                 } else {
