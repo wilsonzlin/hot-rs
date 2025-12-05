@@ -7,43 +7,75 @@
 
 ## Current Status
 
-**Phase**: Initial Planning & Research
+**Phase**: Phase 1 Complete - Baseline Implementation
 **Date Started**: 2024-12-05
 **Last Updated**: 2024-12-05
 
-### Active Tasks
+### Completed
 - [x] Create DESIGN.md reference document
 - [x] Create SCRATCHPAD.md working document
-- [ ] Set up Rust project structure
-- [ ] Implement arena allocator
-- [ ] Implement basic ART nodes
+- [x] Set up Rust project structure
+- [x] Implement arena allocator (basic)
+- [x] Implement ART node types (Node4, Node16, Node48, Node256)
+- [x] Implement ART insert/get/remove/prefix_scan
+- [x] Create SimpleKV (BTreeMap-based) fallback
+- [x] Verify correctness with real URL dataset
+
+### Current Implementation Notes
+- ART implementation has a bug when handling >1000 keys with certain patterns
+- Switched to SimpleKV (BTreeMap-based) for correctness
+- Performance is similar to std BTreeMap (~113 bytes/key, ~10M ops/sec)
+- Need to debug ART node restructuring logic
+
+### Active Tasks  
+- [ ] Debug ART node growth/restructuring bug
+- [ ] Implement proper memory tracking
+- [ ] Optimize SimpleKV with arena allocation
+- [ ] Research FST integration for frozen layer
 
 ### Blockers
-None currently.
+- ART bug: Keys become inaccessible after ~1000 insertions when node growth triggers
 
 ---
 
 ## Session Log
 
-### Session 1: 2024-12-05 - Project Initialization
+### Session 1: 2024-12-05 - Project Initialization & Implementation
 
 **Goals**:
 1. Create comprehensive documentation
 2. Set up project structure
 3. Begin ART implementation
+4. Test with real data
 
 **Progress**:
 - Created DESIGN.md with full project specification
 - Created SCRATCHPAD.md (this file)
+- Implemented full ART with Node4/16/48/256
+- Implemented arena allocator
+- Implemented SimpleKV (BTreeMap-based) fallback
+- Downloaded and tested with URL dataset (100K URLs)
+- Verified correctness: 1000/1000 lookups pass
 
-**Notes**:
-- Decided on hybrid ART + FST architecture
-- Primary focus on memory efficiency
+**Issues Found**:
+1. ART has bug when handling >1000 keys - node restructuring corrupts tree
+2. Specifically happens during Node4→Node16 or similar transitions
+3. Keys sharing prefix become inaccessible after restructuring
+
+**Decisions Made**:
+- Use SimpleKV as interim backend for correctness
+- Keep ART code for future debugging/optimization
+- Focus on correctness first, then optimize
+
+**Performance (SimpleKV with URL dataset)**:
+- Insert: 19ms for 100K keys (~5M inserts/sec)
+- Lookup: 1ms for 10K lookups (~10M ops/sec)
+- Memory: ~113 bytes/key (similar to BTreeMap)
 
 **Next Steps**:
-- Initialize Cargo project
-- Set up benchmarking infrastructure
-- Begin arena allocator
+1. Debug ART node restructuring bug
+2. Implement arena-based key storage to reduce memory
+3. Research FST for frozen layer compression
 
 ---
 
@@ -171,6 +203,57 @@ The `fst` crate builds from sorted input. Options:
 
 ---
 
+## Primary Test Dataset: URL Crawl
+
+**Source**: https://static.wilsonl.in/urls.txt
+**Size**: ~16GB (~340 million URLs)
+
+### Sample Analysis (first 100KB)
+```
+Lines: 2,078
+Avg key length: 47.1 bytes
+Min: 3 bytes, Max: 151 bytes
+Format: Already sorted lexicographically
+```
+
+### Domain Distribution (sample)
+```
+432  0-www-elibrary-imf-org.library.svsu.edu
+143  0-000000.tumblr.com
+129  0-dear-rose-0.tumblr.com
+ 60  0-aredhel-0.tumblr.com
+...
+```
+
+### Key Observations
+1. **Extremely high prefix sharing** - hundreds of URLs per domain
+2. **Hierarchical paths** - dates, post IDs, page numbers
+3. **Pre-sorted** - perfect for FST construction
+4. **Real-world distribution** - not synthetic
+
+### Memory Targets for Full Dataset
+| Approach | Bytes/Key | Total Memory |
+|----------|-----------|--------------|
+| BTreeMap naive | ~80 | ~27 GB |
+| HashMap naive | ~70 | ~24 GB |
+| Our target | ~10 | ~3.4 GB |
+| Stretch goal | ~5 | ~1.7 GB |
+| FST-level | ~3 | ~1 GB |
+
+### Download Commands
+```bash
+# Full dataset (16GB - requires space and time)
+curl -o urls_full.txt "https://static.wilsonl.in/urls.txt"
+
+# Sample (first 1MB)
+curl -r 0-1000000 "https://static.wilsonl.in/urls.txt" > urls_1mb.txt
+
+# Sample (first 100MB) 
+curl -r 0-100000000 "https://static.wilsonl.in/urls.txt" > urls_100mb.txt
+```
+
+---
+
 ## Issues & Solutions
 
 ### Issue 1: [Template]
@@ -219,14 +302,28 @@ pub struct Node4 {
 
 ## Benchmark Results
 
-### [Date] - [Description]
+### 2024-12-05 - URL Dataset (100K URLs)
 
-| Metric | Our Implementation | BTreeMap | HashMap |
-|--------|-------------------|----------|---------|
-| Memory (bytes/key) | | | |
-| Insert (ops/sec) | | | |
-| Lookup (ops/sec) | | | |
-| Range (ops/sec) | | | |
+**Dataset**: Real URLs from web crawl, ~5MB, 100K keys
+**Average key length**: 49 bytes
+**Test environment**: Release build
+
+| Metric | MemKV (SimpleKV) | BTreeMap | Target |
+|--------|------------------|----------|--------|
+| Memory (bytes/key) | ~113 | ~133 | <10 |
+| Insert (ops/sec) | ~5M | ~5M | >100K |
+| Lookup (ops/sec) | ~10M | ~10M | >100K |
+| Memory overhead | 2.3x raw | 2.7x raw | <1.5x |
+
+### 2024-12-05 - Synthetic Sequential Keys (100K)
+
+**Dataset**: format!("user:{:08}", i), ~17 bytes avg
+
+| Metric | MemKV (SimpleKV) | BTreeMap |
+|--------|------------------|----------|
+| Memory (bytes/key) | ~85 | ~107 |
+| Insert (ops/sec) | ~5M | ~5M |
+| Lookup (ops/sec) | ~10M | ~10M |
 
 ---
 
@@ -278,20 +375,23 @@ pub struct Node4 {
 
 ## Weekly Goals
 
-### Week 1 (Current)
-- [ ] Project setup
-- [ ] Arena allocator
-- [ ] Basic ART nodes
-- [ ] Basic insert/get
+### Week 1 (DONE)
+- [x] Project setup
+- [x] Arena allocator (basic)
+- [x] Basic ART nodes (Node4, Node16, Node48, Node256)
+- [x] Basic insert/get
+- [x] SimpleKV fallback implementation
+- [x] Test with real URL data
 
-### Week 2
-- [ ] Full ART operations
-- [ ] Iteration
-- [ ] Initial benchmarks
+### Week 2 (Next)
+- [ ] Debug ART node restructuring bug
+- [ ] Add proper memory tracking
+- [ ] Arena-based key storage
+- [ ] Compare with radix_trie crate
 
 ### Week 3
 - [ ] Memory optimizations
-- [ ] Pointer compression
+- [ ] Pointer compression (32-bit offsets)
 - [ ] Comparison benchmarks
 
 ### Week 4
@@ -300,9 +400,27 @@ pub struct Node4 {
 - [ ] Compaction
 
 ### Week 5
-- [ ] Concurrency
+- [ ] Concurrency improvements
 - [ ] Polish
 - [ ] Final benchmarks
+
+## ART Bug Investigation
+
+### Symptoms
+- After ~1000 insertions, keys become inaccessible
+- Specifically affects keys sharing prefix when node restructuring happens
+- Example: Inserting key 1062 corrupts keys 974-1061 (all share "0-r" prefix)
+
+### Hypothesis
+- Bug in node growth (Node4→Node16 or Node16→Node48)
+- Or bug in remove_child + add_child pair during insertion
+- Tree corruption when node transitions
+
+### Debug Strategy
+1. Add detailed logging to node growth functions
+2. Trace exact state before/after corruption
+3. Simplify test case to minimal reproduction
+4. Check similar implementations (art-rs, DuckDB) for comparison
 
 ---
 

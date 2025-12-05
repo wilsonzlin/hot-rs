@@ -572,10 +572,21 @@ impl<V: Clone> MemKV<V> {
    - Timestamp-prefixed keys
    - Hierarchical paths (a/b/c/d)
 
-3. **Real-world**
-   - URL dataset (if available)
-   - Wikipedia titles
-   - Source code paths
+3. **Real-world: URL Dataset** ⭐ PRIMARY
+   - **Source**: https://static.wilsonl.in/urls.txt
+   - **Size**: ~16GB, hundreds of millions of URLs
+   - **Origin**: Real search engine crawl
+   - **Characteristics** (from sample analysis):
+     - Average key length: ~47 bytes
+     - Min: 3 bytes, Max: 151 bytes
+     - Already lexicographically sorted
+     - Very high prefix sharing (domains cluster together)
+     - Domains: tumblr, dreamwidth, livejournal, etc.
+   - **Estimated count**: ~340 million URLs (16GB / 47 bytes)
+   - **Memory targets**:
+     - BTreeMap naive: ~27GB (80 bytes/key)
+     - Our target: ~3.4GB (10 bytes/key)
+     - Stretch goal: ~1.7GB (5 bytes/key)
 
 ### Comparison Baselines
 
