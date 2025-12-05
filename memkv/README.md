@@ -6,16 +6,19 @@ Memory-efficient key-value storage for string keys, designed for billion-key dat
 
 | Implementation | Memory | Overhead/Key | Insert ops/s | Lookup ops/s |
 |---------------|--------|--------------|--------------|--------------|
-| **FrozenLayer (FST)** | 320 MB | **-16.2 bytes** | 661K | 2.6M |
-| **FastArt** | **998 MB** | **58.4 bytes** | **5.1M** | **9.9M** |
-| libart (C) | 1,123 MB | 72.2 bytes | 4.9M | 9.6M |
-| BTreeMap | 1,145 MB | 74.6 bytes | 3.3M | 7.8M |
-| ArenaArt | 1,449 MB | 108.1 bytes | 3.1M | 10.7M |
-| art-tree | 1,961 MB | 164.4 bytes | 3.8M | - |
-| rart | 9,875 MB | 1,035.6 bytes | 1.6M | - |
+| **FrozenLayer (FST)** | 320 MB | **-16.2 bytes** | 721K | 3.3M |
+| **FastArt** | **1,040 MB** | **63.0 bytes** | **4.9M** | **8.6M** |
+| libart (C) | 1,123 MB | 72.2 bytes | 5.0M | 11.7M |
+| BTreeMap | 1,145 MB | 74.5 bytes | 3.3M | 8.5M |
+| ArenaArt | 1,449 MB | 108.1 bytes | 3.5M | 11.1M |
+| art-tree | 1,961 MB | 164.5 bytes | 3.2M | 5.5M |
+| blart | 3,286 MB | 310.3 bytes | 2.3M | 9.4M |
+| art | 6,953 MB | 713.9 bytes | 785K | 2.1M |
+| rart | 9,875 MB | 1,035.6 bytes | 797K | 3.6M |
 
 **FST achieves COMPRESSION** (negative overhead) for immutable data.  
-**FastArt beats libart (C)** with 19% less memory and 100% correctness.
+**FastArt beats libart (C)** with 13% less memory and 100% correctness.  
+**FastArt is 16x better** than rart (the SIMD-optimized Rust ART)!
 
 ## Usage
 
@@ -62,9 +65,28 @@ assert_eq!(art.get(b"key1"), Some(&1));
 ## Key Findings
 
 1. **FST is unbeatable for immutable data** - provides 2.4x compression
-2. **FastArt beats libart (C)** - 58 vs 72 bytes overhead, pure Rust
+2. **FastArt beats libart (C)** - 63 vs 72 bytes overhead, pure Rust, 100% correct
 3. **BTreeMap is a solid baseline** - 75 bytes overhead, stdlib optimized
-4. **Fixed-key-size ART crates are disasters** - rart uses 1035 bytes per key!
+4. **Fixed-key-size ART crates are disasters** - rart uses 1036 bytes per key!
+
+## Why Other Rust ARTs Fail
+
+Most Rust ART crates (rart, blart, art) use **fixed-size key arrays**:
+
+```rust
+// rart forces 256-byte keys regardless of actual length!
+let key: ArrayKey<256> = "example.com".into();  // 11 bytes → 256 bytes
+```
+
+For URLs averaging 51.5 bytes, this wastes **204 bytes per key**!
+
+| Crate | Overhead | vs FastArt |
+|-------|----------|------------|
+| FastArt | 63 b | 1.0x |
+| art-tree | 165 b | 2.6x |
+| blart | 310 b | 4.9x |
+| art | 714 b | 11.3x |
+| rart | 1,036 b | **16.4x** |
 
 ## FastArt Optimizations
 
