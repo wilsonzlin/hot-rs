@@ -49,6 +49,7 @@ tikv-jemalloc-ctl = "0.5"
 
 # Existing Rust ART implementations for comparison
 art-tree = "0.2"
+blart = "0.4"
 
 [[bench]]
 name = "baseline"
