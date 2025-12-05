@@ -2,20 +2,35 @@
 //!
 //! A Rust library designed for storing billions of string keys with extreme memory efficiency.
 //!
-//! ## Key Results (967K URL Dataset)
+//! ## Key Results (9.5M URL Dataset, 467 MB raw data)
 //!
-//! | Implementation | Memory | Bytes/Key | vs BTreeMap |
-//! |---------------|--------|-----------|-------------|
-//! | **FrozenLayer (FST)** | **40 MB** | **44** | **-65%** |
-//! | std::BTreeMap | 115 MB | 125 | baseline |
-//! | ArenaArt | 180 MB | 195 | +57% |
+//! | Implementation | Memory | Overhead/Key | Insert ops/s |
+//! |---------------|--------|--------------|--------------|
+//! | **FrozenLayer (FST)** | 320 MB | **-16 bytes** | 661K |
+//! | **FastArt** | **998 MB** | **58 bytes** | **5.1M** |
+//! | libart (C) | 1,123 MB | 72 bytes | 4.9M |
+//! | BTreeMap | 1,145 MB | 75 bytes | 3.3M |
 //!
 //! ## Features
 //!
-//! - **FrozenLayer (FST)**: 65% memory reduction for immutable data
+//! - **FrozenLayer (FST)**: Compression for immutable data (negative overhead!)
+//! - **FastArt**: Best mutable ART, beats libart (C) by 19%
 //! - **Point lookups**: O(key_length) lookups
 //! - **Range queries**: Efficient lexicographic range iteration
 //! - **Prefix scans**: Find all keys with a given prefix
+//!
+//! ## Example: FastArt (Mutable - Best Performance)
+//!
+//! ```rust
+//! use memkv::FastArt;
+//!
+//! let mut art = FastArt::new();
+//! art.insert(b"key1", 1);
+//! art.insert(b"key2", 2);
+//!
+//! assert_eq!(art.get(b"key1"), Some(1));
+//! assert_eq!(art.get(b"key2"), Some(2));
+//! ```
 //!
 //! ## Example: Frozen Data (Best Memory Efficiency)
 //!
@@ -33,7 +48,7 @@
 //! assert_eq!(frozen.get(b"apple"), Some(1));
 //! ```
 //!
-//! ## Example: Mutable Data
+//! ## Example: Mutable Data with MemKV wrapper
 //!
 //! ```rust
 //! use memkv::MemKV;

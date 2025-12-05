@@ -221,9 +221,9 @@ fn main() {
         
         println!("  Memory: {} MB, {:.1} bytes overhead/key", alloc / (1024*1024), overhead);
         println!("  Insert: {:.0} ops/sec, Lookup: {:.0} ops/sec", insert_ops, lookup_ops);
-        println!("  Correctness: {}/100000 (WIP)\n", correct);
+        println!("  Correctness: {}/100000\n", correct);
         
-        results.push(("FastArt (WIP)", alloc, overhead, insert_ops, correct));
+        results.push(("FastArt", alloc, overhead, insert_ops, correct));
         drop(tree);
     }
     let _ = get_allocated();

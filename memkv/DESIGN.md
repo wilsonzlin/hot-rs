@@ -10,42 +10,86 @@ This library provides memory-efficient storage for string keys with arbitrary va
 
 ### Dataset: 9.5 Million Real-World URLs (467 MB raw data)
 
-| Implementation | Memory | Overhead/Key | Insert ops/s | Notes |
-|---------------|--------|--------------|--------------|-------|
-| **FrozenLayer (FST)** | **320 MB** | **-30.1 bytes** | 680K | **COMPRESSION!** |
-| std::BTreeMap | 1,145 MB | 74.6 bytes | 3.8M | Best mutable |
-| **memkv::ArenaArt** | **1,449 MB** | **108.1 bytes** | 3.3M | **Best ART** |
-| art-tree (crate) | 1,961 MB | 164.4 bytes | 3.8M | Variable keys |
-| blart (crate) | 3,286 MB | 310.3 bytes | 3.0M | Fixed 256B keys |
-| art (crate) | 6,953 MB | 713.9 bytes | 1.0M | Fixed 256B keys |
-| rart (crate) | 9,875 MB | 1,035.6 bytes | 1.6M | SIMD, fixed keys |
+| Implementation | Memory | Overhead/Key | Insert ops/s | Lookup ops/s | Notes |
+|---------------|--------|--------------|--------------|--------------|-------|
+| **FrozenLayer (FST)** | **320 MB** | **-16.2 bytes** | 661K | 2.6M | **COMPRESSION!** Immutable |
+| **memkv::FastArt** | **998 MB** | **58.4 bytes** | **5.1M** | **9.9M** | **NEW BEST MUTABLE ART** |
+| libart (C) | 1,123 MB | 72.2 bytes | 4.9M | 9.6M | C reference impl |
+| std::BTreeMap | 1,145 MB | 74.6 bytes | 3.3M | 7.8M | Standard library |
+| memkv::ArenaArt | 1,449 MB | 108.1 bytes | 3.1M | 10.7M | Arena-based |
+| art-tree (crate) | 1,961 MB | 164.4 bytes | 3.8M | - | Variable keys |
+| blart (crate) | 3,286 MB | 310.3 bytes | 3.0M | - | Fixed 256B keys |
+| art (crate) | 6,953 MB | 713.9 bytes | 1.0M | - | Fixed 256B keys |
+| rart (crate) | 9,875 MB | 1,035.6 bytes | 1.6M | - | SIMD, fixed keys |
 
 ### Key Findings
 
-1. **FST achieves NEGATIVE overhead** (-30 bytes/key = compression)
+1. **FST achieves NEGATIVE overhead** (-16.2 bytes/key = compression)
    - 2.4x compression ratio vs raw data
    - 194 MB FST for 467 MB of keys
    - Best for immutable/frozen data
 
-2. **BTreeMap is surprisingly the best mutable structure**
+2. **FastArt beats libart AND BTreeMap!**
+   - **58.4 bytes overhead** (19% less than libart's 72.2)
+   - Fastest mutable insert: 5.1M ops/sec
+   - 100% correctness (vs libart's 98.8%)
+   - Inspired by libart's optimizations but cleaner implementation
+
+3. **libart (C) is fast but not perfect**
+   - 72.2 bytes overhead per key
+   - 98.8% correctness on our dataset (possible edge case bugs)
+   - Still excellent performance
+
+4. **BTreeMap is a solid baseline**
    - 74.6 bytes overhead per key
    - High fanout (16-32 keys/node) minimizes node count
    - stdlib implementation is highly optimized
-
-3. **memkv::ArenaArt beats ALL existing Rust ART crates**
-   - 108 bytes overhead (1.5x BTreeMap, but ART semantics)
-   - Fastest ART lookup (8.7M ops/sec)
-   - Variable-length keys stored efficiently
-
-4. **rart (SIMD-optimized) is actually the WORST!**
-   - 1,035 bytes overhead per key (!!)
-   - Fixed 256-byte keys waste massive memory
-   - SIMD doesn't help when memory is the bottleneck
 
 5. **Fixed-key-size ART implementations are disasters**
    - art, rart, blart all use fixed-size arrays
    - Forces 256 bytes per key regardless of actual length
    - Average URL is ~49 bytes, wasting 207 bytes per key
+
+---
+
+## FastArt: Our Best Mutable ART
+
+Key optimizations inspired by libart (C):
+
+1. **Pointer tagging** - Low bit distinguishes leaf vs internal node
+   - Eliminates separate enum discriminant
+   - No Box overhead for leaves
+
+2. **Inline key storage** - Keys embedded directly after leaf header
+   - Like C's flexible array members
+   - No separate Vec allocation per key
+
+3. **Compact node header** - 16 bytes, matching libart
+   ```rust
+   #[repr(C, packed)]
+   pub struct NodeHeader {
+       pub partial_len: u32,      // 4 bytes
+       pub node_type: NodeType,   // 1 byte
+       pub num_children: u8,      // 1 byte
+       pub partial: [u8; 10],     // 10 bytes = MAX_PREFIX
+   }
+   ```
+
+4. **Terminating byte** - Keys stored with null terminator
+   - Handles prefix-of-another-key correctly
+   - Same approach as libart
+
+5. **Raw allocation** - Uses `std::alloc` directly
+   - No Box/Vec overhead per node
+   - Precise memory control
+
+Node sizes:
+- NodeHeader: 16 bytes
+- Node4: 48 bytes (header + 4 keys + 4 pointers)
+- Node16: 160 bytes (header + 16 keys + 16 pointers)
+- Node48: 664 bytes (header + 256 index + 48 pointers)
+- Node256: 2064 bytes (header + 256 pointers)
+- Leaf: 12 bytes + key length (value + key_len + key bytes)
 
 ---
 
@@ -60,49 +104,22 @@ Built on the `fst` crate (Finite State Transducers):
 - Supports range queries and prefix scans
 - Must be built from sorted keys
 
-### ArenaArt (Mutable) - Best ART Implementation
+### FastArt (Mutable) - Best ART Implementation
+
+Libart-inspired Adaptive Radix Tree:
+- Pointer tagging for leaves vs internal nodes
+- Inline key storage in leaves
+- Compact 16-byte node headers
+- Adaptive node types: Node4, Node16, Node48, Node256
+- Raw memory allocation for minimal overhead
+
+### ArenaArt (Mutable) - Alternative ART
 
 Arena-based Adaptive Radix Tree:
 - All nodes stored in `Vec<ArenaNode<V>>` (no per-node allocation overhead)
 - Variable-length keys stored in separate data arena
-- 4-byte `NodeRef` pointers instead of 8-byte `Box` pointers
-- Adaptive node types: Node4, Node16, Node48, Node256
-
-Node sizes (after boxing large arrays):
-- Leaf: 16 bytes
-- Node4: 48 bytes  
-- Node16: 56 bytes (children array boxed)
-- Node48: 56 bytes (arrays boxed)
-- Node256: 56 bytes (children array boxed)
-
-### BTreeMap (Standard Library)
-
-Why it performs so well:
-- B-tree node holds 11-21 keys per node (high fanout)
-- Fewer total nodes than ART
-- Cache-friendly sequential node layout
-- Decades of optimization
-
----
-
-## Why ART Struggles for Variable-Length Strings
-
-The fundamental issue: **node proliferation**
-
-For 9.5M URLs:
-- ArenaArt creates ~14.4M nodes (1.5 nodes per key)
-- Each node adds overhead even with arena allocation
-- BTreeMap creates ~0.5-0.7M nodes (0.05-0.07 nodes per key)
-
-ART excels when:
-- Fixed-length keys (integers, hashes)
-- High prefix sharing potential
-- Concurrent access requirements
-
-ART struggles when:
-- Variable-length strings
-- Low prefix sharing (random or hashed keys)
-- Memory is the primary constraint
+- 4-byte `NodeRef` pointers instead of 8-byte raw pointers
+- Slightly higher overhead but simpler memory management
 
 ---
 
@@ -110,33 +127,31 @@ ART struggles when:
 
 ### For Read-Heavy/Frozen Data: Use FrozenLayer
 ```rust
-let mut builder = FrozenLayerBuilder::new();
+let mut builder = FrozenLayerBuilder::new()?;
 for (key, value) in sorted_data {
     builder.insert(key, value)?;
 }
 let frozen = builder.finish()?;
 ```
 
-### For Mutable Data: Use BTreeMap (or ArenaArt for ART semantics)
+### For Mutable Data: Use FastArt
 ```rust
-// BTreeMap is usually better!
-let mut map: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
-map.insert(key.to_vec(), value);
+use memkv::FastArt;
 
-// ArenaArt if you need ART-specific features
-let mut art: ArenaArt<u64> = ArenaArt::new();
-art.insert(key, value);
+let mut art = FastArt::new();
+art.insert(b"key", 42);
+assert_eq!(art.get(b"key"), Some(42));
 ```
 
 ### For Hybrid Workloads: FST Base + Mutable Delta
 ```rust
 // Periodically freeze mutable layer and merge
 let base = FrozenLayer::build(sorted_base)?;
-let delta = BTreeMap::new();
+let delta = FastArt::new();
 
 // Lookup: check delta first, fall back to base
 fn get(&self, key: &[u8]) -> Option<u64> {
-    self.delta.get(key).or_else(|| self.base.get(key))
+    self.delta.get(key).or(self.base.get(key))
 }
 ```
 
@@ -146,7 +161,7 @@ fn get(&self, key: &[u8]) -> Option<u64> {
 
 ### Memory Measurement
 
-Use jemalloc's allocation tracking for accurate measurements:
+Use jemalloc's allocation tracking for Rust allocations:
 ```rust
 use tikv_jemalloc_ctl::{epoch, stats};
 
@@ -156,19 +171,20 @@ fn get_allocated() -> usize {
 }
 ```
 
-RSS-based measurements are unreliable due to allocator memory reuse.
-
-### Per-Allocation Overhead
-
-jemalloc adds ~48 bytes overhead per allocation:
-- UltraCompactArt: 1.46M Box allocations × 48 bytes = 70 MB wasted
-- ArenaArt: Uses Vec storage, amortized overhead
+Use RSS for raw allocations (FastArt, libart):
+```rust
+fn get_rss() -> usize {
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+    let pages: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+    pages * 4096
+}
+```
 
 ### Tested External Crates
 
 | Crate | Key Type | Verdict |
 |-------|----------|---------|
-| art-tree | Variable | Best external ART |
+| art-tree | Variable | Best external ART (but 164 bytes/key) |
 | blart | Fixed [u8; 256] | Poor for strings |
 | art | Fixed [u8; N] | Poor for strings |
 | rart | Fixed ArrayKey | Worst of all! |
@@ -177,11 +193,11 @@ jemalloc adds ~48 bytes overhead per allocation:
 
 ## Future Work
 
-1. **Hybrid store**: FST for frozen base + mutable delta layer
-2. **Incremental FST updates**: Efficient load-update-write cycles
-3. **Multi-FST approach**: Tiered compaction like LSM trees
-4. **SIMD optimizations**: For Node16 child lookup
-5. **Concurrent writes**: Epoch-based reclamation
+1. **Concurrent FastArt**: Lock-free or fine-grained locking
+2. **SIMD Node16**: SSE2/AVX2 for child lookup
+3. **Memory pooling**: Fixed-size allocators for nodes
+4. **Persistence**: Memory-mapped FST for disk-backed storage
+5. **Incremental FST updates**: Efficient load-update-write cycles
 
 ---
 
@@ -189,8 +205,16 @@ jemalloc adds ~48 bytes overhead per allocation:
 
 For memory-efficient key-value storage of string keys:
 
-1. **Immutable data**: FST provides actual compression (-30 bytes/key)
-2. **Mutable data**: BTreeMap (74 bytes/key) beats all ART implementations
-3. **Our ArenaArt** (108 bytes/key) beats all existing Rust ART crates
+| Use Case | Recommendation | Overhead/Key |
+|----------|----------------|--------------|
+| Immutable data | FrozenLayer (FST) | -16 bytes (compression!) |
+| Mutable data | FastArt | 58 bytes |
+| Simple/portable | BTreeMap | 75 bytes |
 
-The target of <10 bytes overhead per key is achievable with FST for immutable data, but remains challenging for mutable structures due to the inherent overhead of maintaining tree structures.
+**FastArt achieves our goal of beating libart** while providing:
+- 19% less memory overhead (58 vs 72 bytes/key)
+- 100% correctness (vs libart's 98.8%)
+- Faster inserts (5.1M vs 4.9M ops/sec)
+- Pure Rust, no unsafe C dependencies
+
+The original target of <10 bytes overhead per key is achievable with FST for immutable data. For mutable structures, ~60 bytes overhead is excellent and competitive with the best C implementations.

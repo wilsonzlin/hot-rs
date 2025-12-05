@@ -15,13 +15,13 @@ use std::ptr::NonNull;
 const MAX_PREFIX: usize = 10;
 
 /// Tagged pointer: low bit = 1 means leaf, 0 means internal node
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct TaggedPtr(usize);
 
 impl TaggedPtr {
     #[inline]
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self(0)
     }
     
@@ -72,13 +72,9 @@ pub enum NodeType {
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct NodeHeader {
-    /// Length of compressed prefix
     pub partial_len: u32,
-    /// Node type
     pub node_type: NodeType,
-    /// Number of children
     pub num_children: u8,
-    /// Compressed prefix (up to 10 bytes)
     pub partial: [u8; MAX_PREFIX],
 }
 
@@ -102,7 +98,7 @@ pub struct Node16 {
 #[repr(C)]
 pub struct Node48 {
     pub header: NodeHeader,
-    pub keys: [u8; 256],  // Maps byte -> child index (0 = empty)
+    pub keys: [u8; 256],
     pub children: [TaggedPtr; 48],
 }
 
@@ -113,17 +109,15 @@ pub struct Node256 {
     pub children: [TaggedPtr; 256],
 }
 
-/// Leaf node with inline key (flexible size)
-/// Layout: [value: u64][key_len: u32][key: [u8; key_len]]
+/// Leaf node with inline key
 #[repr(C)]
 pub struct Leaf {
     pub value: u64,
     pub key_len: u32,
-    // Key bytes follow immediately after (flexible array member pattern)
+    // Key bytes follow immediately after
 }
 
 impl Leaf {
-    /// Allocate a new leaf with inline key
     pub fn alloc(key: &[u8], value: u64) -> NonNull<Leaf> {
         let layout = Self::layout(key.len());
         unsafe {
@@ -133,14 +127,12 @@ impl Leaf {
             }
             (*ptr).value = value;
             (*ptr).key_len = key.len() as u32;
-            // Copy key after the struct
             let key_ptr = (ptr as *mut u8).add(std::mem::size_of::<Leaf>());
             std::ptr::copy_nonoverlapping(key.as_ptr(), key_ptr, key.len());
             NonNull::new_unchecked(ptr)
         }
     }
     
-    /// Get the key bytes
     #[inline]
     pub fn key(&self) -> &[u8] {
         unsafe {
@@ -149,7 +141,6 @@ impl Leaf {
         }
     }
     
-    /// Free a leaf
     pub unsafe fn free(ptr: NonNull<Leaf>) {
         let key_len = (*ptr.as_ptr()).key_len as usize;
         let layout = Self::layout(key_len);
@@ -163,10 +154,17 @@ impl Leaf {
         ).unwrap()
     }
     
-    /// Check if key matches
     #[inline]
     pub fn matches(&self, key: &[u8]) -> bool {
+        // Keys are stored with terminating byte, so compare directly
         self.key() == key
+    }
+    
+    /// Get the original key (without terminating byte)
+    #[inline]
+    pub fn original_key(&self) -> &[u8] {
+        let k = self.key();
+        if k.is_empty() { k } else { &k[..k.len() - 1] }
     }
 }
 
@@ -186,7 +184,8 @@ impl Node4 {
     
     #[inline]
     pub fn find_child(&self, byte: u8) -> Option<TaggedPtr> {
-        for i in 0..self.header.num_children as usize {
+        let n = self.header.num_children as usize;
+        for i in 0..n {
             if self.keys[i] == byte {
                 return Some(self.children[i]);
             }
@@ -195,20 +194,30 @@ impl Node4 {
     }
     
     #[inline]
+    pub fn find_child_idx(&self, byte: u8) -> Option<usize> {
+        let n = self.header.num_children as usize;
+        for i in 0..n {
+            if self.keys[i] == byte {
+                return Some(i);
+            }
+        }
+        None
+    }
+    
+    #[inline]
     pub fn add_child(&mut self, byte: u8, child: TaggedPtr) {
         debug_assert!((self.header.num_children as usize) < 4);
+        let n = self.header.num_children as usize;
         
-        // Insert in sorted order
-        let mut pos = self.header.num_children as usize;
-        for i in 0..self.header.num_children as usize {
+        let mut pos = n;
+        for i in 0..n {
             if byte < self.keys[i] {
                 pos = i;
                 break;
             }
         }
         
-        // Shift existing entries
-        for i in (pos..self.header.num_children as usize).rev() {
+        for i in (pos..n).rev() {
             self.keys[i + 1] = self.keys[i];
             self.children[i + 1] = self.children[i];
         }
@@ -239,8 +248,8 @@ impl Node16 {
     
     #[inline]
     pub fn find_child(&self, byte: u8) -> Option<TaggedPtr> {
-        // TODO: Use SIMD here for speed
-        for i in 0..self.header.num_children as usize {
+        let n = self.header.num_children as usize;
+        for i in 0..n {
             if self.keys[i] == byte {
                 return Some(self.children[i]);
             }
@@ -249,18 +258,30 @@ impl Node16 {
     }
     
     #[inline]
+    pub fn find_child_idx(&self, byte: u8) -> Option<usize> {
+        let n = self.header.num_children as usize;
+        for i in 0..n {
+            if self.keys[i] == byte {
+                return Some(i);
+            }
+        }
+        None
+    }
+    
+    #[inline]
     pub fn add_child(&mut self, byte: u8, child: TaggedPtr) {
         debug_assert!((self.header.num_children as usize) < 16);
+        let n = self.header.num_children as usize;
         
-        let mut pos = self.header.num_children as usize;
-        for i in 0..self.header.num_children as usize {
+        let mut pos = n;
+        for i in 0..n {
             if byte < self.keys[i] {
                 pos = i;
                 break;
             }
         }
         
-        for i in (pos..self.header.num_children as usize).rev() {
+        for i in (pos..n).rev() {
             self.keys[i + 1] = self.keys[i];
             self.children[i + 1] = self.children[i];
         }
@@ -302,7 +323,6 @@ impl Node48 {
     #[inline]
     pub fn add_child(&mut self, byte: u8, child: TaggedPtr) {
         debug_assert!((self.header.num_children as usize) < 48);
-        
         let slot = self.header.num_children as usize;
         self.children[slot] = child;
         self.keys[byte as usize] = (slot + 1) as u8;
@@ -376,32 +396,54 @@ impl FastArt {
     }
     
     pub fn get(&self, key: &[u8]) -> Option<u64> {
-        if self.root.is_null() {
-            return None;
-        }
-        
+        // Add terminating byte like libart
+        let mut key_with_term = Vec::with_capacity(key.len() + 1);
+        key_with_term.extend_from_slice(key);
+        key_with_term.push(0);
+        unsafe { self.search(&key_with_term) }
+    }
+    
+    unsafe fn search(&self, key: &[u8]) -> Option<u64> {
         let mut node = self.root;
         let mut depth = 0;
         
         while !node.is_null() {
             if node.is_leaf() {
-                let leaf = unsafe { node.as_leaf().as_ref() };
+                let leaf = node.as_leaf().as_ref();
                 if leaf.matches(key) {
                     return Some(leaf.value);
                 }
                 return None;
             }
             
-            let header = unsafe { node.as_node().as_ref() };
+            let header = &*(node.as_node().as_ptr() as *const NodeHeader);
+            let prefix_len = header.partial_len as usize;
             
             // Check prefix
-            if header.partial_len > 0 {
-                let prefix_len = header.partial_len as usize;
-                let check_len = prefix_len.min(MAX_PREFIX).min(key.len().saturating_sub(depth));
-                
+            if prefix_len > 0 {
+                let check_len = prefix_len.min(MAX_PREFIX);
+                if depth + check_len > key.len() {
+                    return None;
+                }
                 for i in 0..check_len {
                     if header.partial[i] != key[depth + i] {
                         return None;
+                    }
+                }
+                
+                // For long prefixes, verify against leaf
+                if prefix_len > MAX_PREFIX {
+                    let min_leaf = Self::minimum_static(node);
+                    if let Some(leaf) = min_leaf {
+                        let leaf_key = (*leaf.as_ptr()).key();
+                        for i in MAX_PREFIX..prefix_len {
+                            if depth + i >= key.len() || depth + i >= leaf_key.len() {
+                                return None;
+                            }
+                            if leaf_key[depth + i] != key[depth + i] {
+                                return None;
+                            }
+                        }
                     }
                 }
                 
@@ -415,19 +457,19 @@ impl FastArt {
             let byte = key[depth];
             let child = match header.node_type {
                 NodeType::Node4 => {
-                    let n = unsafe { &*(node.as_node().as_ptr() as *const Node4) };
+                    let n = &*(node.as_node().as_ptr() as *const Node4);
                     n.find_child(byte)
                 }
                 NodeType::Node16 => {
-                    let n = unsafe { &*(node.as_node().as_ptr() as *const Node16) };
+                    let n = &*(node.as_node().as_ptr() as *const Node16);
                     n.find_child(byte)
                 }
                 NodeType::Node48 => {
-                    let n = unsafe { &*(node.as_node().as_ptr() as *const Node48) };
+                    let n = &*(node.as_node().as_ptr() as *const Node48);
                     n.find_child(byte)
                 }
                 NodeType::Node256 => {
-                    let n = unsafe { &*(node.as_node().as_ptr() as *const Node256) };
+                    let n = &*(node.as_node().as_ptr() as *const Node256);
                     n.find_child(byte)
                 }
             };
@@ -444,235 +486,297 @@ impl FastArt {
         None
     }
     
+    unsafe fn minimum_static(node: TaggedPtr) -> Option<NonNull<Leaf>> {
+        if node.is_null() {
+            return None;
+        }
+        if node.is_leaf() {
+            return Some(node.as_leaf());
+        }
+        
+        let header = &*(node.as_node().as_ptr() as *const NodeHeader);
+        match header.node_type {
+            NodeType::Node4 => {
+                let n = &*(node.as_node().as_ptr() as *const Node4);
+                if n.header.num_children > 0 {
+                    Self::minimum_static(n.children[0])
+                } else {
+                    None
+                }
+            }
+            NodeType::Node16 => {
+                let n = &*(node.as_node().as_ptr() as *const Node16);
+                if n.header.num_children > 0 {
+                    Self::minimum_static(n.children[0])
+                } else {
+                    None
+                }
+            }
+            NodeType::Node48 => {
+                let n = &*(node.as_node().as_ptr() as *const Node48);
+                for byte in 0..256 {
+                    let idx = n.keys[byte];
+                    if idx != 0 {
+                        return Self::minimum_static(n.children[(idx - 1) as usize]);
+                    }
+                }
+                None
+            }
+            NodeType::Node256 => {
+                let n = &*(node.as_node().as_ptr() as *const Node256);
+                for i in 0..256 {
+                    if !n.children[i].is_null() {
+                        return Self::minimum_static(n.children[i]);
+                    }
+                }
+                None
+            }
+        }
+    }
+    
     pub fn insert(&mut self, key: &[u8], value: u64) -> Option<u64> {
+        // Add terminating byte like libart
+        let mut key_with_term = Vec::with_capacity(key.len() + 1);
+        key_with_term.extend_from_slice(key);
+        key_with_term.push(0);
+        
         if self.root.is_null() {
-            let leaf = Leaf::alloc(key, value);
+            let leaf = Leaf::alloc(&key_with_term, value);
             self.root = TaggedPtr::from_leaf(leaf);
             self.size += 1;
             return None;
         }
         
         let root_ptr = &mut self.root as *mut TaggedPtr;
-        let result = unsafe { self.insert_recursive(root_ptr, key, 0, value) };
+        let result = unsafe { 
+            Self::recursive_insert_static(root_ptr, &key_with_term, 0, value)
+        };
         if result.is_none() {
             self.size += 1;
         }
         result
     }
     
-    unsafe fn insert_recursive(
-        &mut self,
+    unsafe fn recursive_insert_static(
         node_ptr: *mut TaggedPtr,
         key: &[u8],
-        mut depth: usize,
+        depth: usize,
         value: u64,
     ) -> Option<u64> {
         let node = *node_ptr;
         
-        // Handle leaf node
+        // Leaf node
         if node.is_leaf() {
             let leaf = node.as_leaf();
             let existing_key = (*leaf.as_ptr()).key();
             
-            // Check for update
+            // Update existing
             if existing_key == key {
                 let old = (*leaf.as_ptr()).value;
                 (*leaf.as_ptr()).value = value;
                 return Some(old);
             }
             
-            // Need to create a new internal node
+            // Split: create new node
             let new_node = Node4::alloc();
-            let new_node_ptr = new_node.as_ptr();
+            let new_ptr = new_node.as_ptr();
             
-            // Find longest common prefix
+            // Find longest common prefix starting from depth
             let mut prefix_len = 0;
-            while depth + prefix_len < key.len() 
-                && depth + prefix_len < existing_key.len()
+            let max_check = (key.len() - depth).min(existing_key.len() - depth);
+            while prefix_len < max_check 
                 && key[depth + prefix_len] == existing_key[depth + prefix_len] 
             {
                 prefix_len += 1;
             }
             
-            // Set prefix
-            (*new_node_ptr).header.partial_len = prefix_len.min(MAX_PREFIX) as u32;
-            for i in 0..prefix_len.min(MAX_PREFIX) {
-                (*new_node_ptr).header.partial[i] = key[depth + i];
+            (*new_ptr).header.partial_len = prefix_len as u32;
+            let copy_len = prefix_len.min(MAX_PREFIX);
+            for i in 0..copy_len {
+                (*new_ptr).header.partial[i] = key[depth + i];
             }
             
             // Add existing leaf
             if depth + prefix_len < existing_key.len() {
-                (*new_node_ptr).add_child(
-                    existing_key[depth + prefix_len],
-                    node,
-                );
+                (*new_ptr).add_child(existing_key[depth + prefix_len], node);
             }
             
             // Add new leaf
+            let new_leaf = Leaf::alloc(key, value);
             if depth + prefix_len < key.len() {
-                let new_leaf = Leaf::alloc(key, value);
-                (*new_node_ptr).add_child(
-                    key[depth + prefix_len],
-                    TaggedPtr::from_leaf(new_leaf),
-                );
+                (*new_ptr).add_child(key[depth + prefix_len], TaggedPtr::from_leaf(new_leaf));
             }
             
             *node_ptr = TaggedPtr::from_node(new_node);
             return None;
         }
         
-        // Handle internal node
-        let header = node.as_node().as_ptr() as *mut NodeHeader;
+        // Internal node
+        let header_ptr = node.as_node().as_ptr() as *mut NodeHeader;
+        let prefix_len = (*header_ptr).partial_len as usize;
         
-        // Check prefix
-        let prefix_len = (*header).partial_len as usize;
         if prefix_len > 0 {
-            let check_len = prefix_len.min(MAX_PREFIX).min(key.len().saturating_sub(depth));
+            // Check for prefix mismatch
+            let mismatch = Self::prefix_mismatch_static(node, key, depth);
             
-            let mut mismatch = check_len;
-            for i in 0..check_len {
-                if (*header).partial[i] != key[depth + i] {
-                    mismatch = i;
-                    break;
+            if mismatch < prefix_len {
+                // Split node at mismatch point
+                let new_node = Node4::alloc();
+                let new_ptr = new_node.as_ptr();
+                
+                (*new_ptr).header.partial_len = mismatch as u32;
+                let copy_len = mismatch.min(MAX_PREFIX);
+                for i in 0..copy_len {
+                    (*new_ptr).header.partial[i] = (*header_ptr).partial[i];
                 }
+                
+                // Adjust old node's prefix
+                if prefix_len <= MAX_PREFIX {
+                    (*new_ptr).add_child((*header_ptr).partial[mismatch], node);
+                    let new_prefix_len = prefix_len - mismatch - 1;
+                    (*header_ptr).partial_len = new_prefix_len as u32;
+                    // Shift prefix
+                    for i in 0..new_prefix_len.min(MAX_PREFIX) {
+                        (*header_ptr).partial[i] = (*header_ptr).partial[mismatch + 1 + i];
+                    }
+                } else {
+                    // Long prefix - need to get byte from leaf
+                    let min_leaf = Self::minimum_static(node).unwrap();
+                    let leaf_key = (*min_leaf.as_ptr()).key();
+                    (*new_ptr).add_child(leaf_key[depth + mismatch], node);
+                    let new_prefix_len = prefix_len - mismatch - 1;
+                    (*header_ptr).partial_len = new_prefix_len as u32;
+                    let copy_start = depth + mismatch + 1;
+                    let copy_len = new_prefix_len.min(MAX_PREFIX);
+                    for i in 0..copy_len {
+                        (*header_ptr).partial[i] = leaf_key[copy_start + i];
+                    }
+                }
+                
+                // Add new leaf
+                let new_leaf = Leaf::alloc(key, value);
+                (*new_ptr).add_child(key[depth + mismatch], TaggedPtr::from_leaf(new_leaf));
+                
+                *node_ptr = TaggedPtr::from_node(new_node);
+                return None;
             }
-            
-            if mismatch < check_len {
-                // Prefix mismatch - need to split
-                return self.split_node(node_ptr, key, depth, mismatch, value);
-            }
-            
-            depth += prefix_len;
         }
         
-        if depth >= key.len() {
-            // Key ends at internal node - not supported in basic impl
-            // Would need combined leaf+node types
+        let new_depth = depth + prefix_len;
+        
+        if new_depth >= key.len() {
+            // Key exhausted at internal node - would need combined leaf+node
             return None;
         }
         
-        let byte = key[depth];
+        let byte = key[new_depth];
         
-        // Find or create child
-        let child_ptr = match (*header).node_type {
+        // Find child or add new one
+        match (*header_ptr).node_type {
             NodeType::Node4 => {
                 let n = node.as_node().as_ptr() as *mut Node4;
-                if let Some(_) = (*n).find_child(byte) {
-                    self.get_child_ptr_mut(n, byte)
-                } else if (*n).header.num_children < 4 {
+                if let Some(idx) = (*n).find_child_idx(byte) {
+                    let child_ptr = &mut (*n).children[idx] as *mut TaggedPtr;
+                    return Self::recursive_insert_static(child_ptr, key, new_depth + 1, value);
+                }
+                if ((*n).header.num_children as usize) < 4 {
                     let new_leaf = Leaf::alloc(key, value);
                     (*n).add_child(byte, TaggedPtr::from_leaf(new_leaf));
                     return None;
-                } else {
-                    // Grow to Node16
-                    let new_node = self.grow_node4(n);
-                    *node_ptr = TaggedPtr::from_node(new_node);
-                    let new_leaf = Leaf::alloc(key, value);
-                    (*new_node.as_ptr()).add_child(byte, TaggedPtr::from_leaf(new_leaf));
-                    return None;
                 }
+                // Grow
+                let new_node = Self::grow_node4_static(n);
+                *node_ptr = TaggedPtr::from_node(new_node);
+                let new_leaf = Leaf::alloc(key, value);
+                (*new_node.as_ptr()).add_child(byte, TaggedPtr::from_leaf(new_leaf));
+                None
             }
             NodeType::Node16 => {
                 let n = node.as_node().as_ptr() as *mut Node16;
-                if let Some(_) = (*n).find_child(byte) {
-                    self.get_child_ptr16_mut(n, byte)
-                } else if (*n).header.num_children < 16 {
+                if let Some(idx) = (*n).find_child_idx(byte) {
+                    let child_ptr = &mut (*n).children[idx] as *mut TaggedPtr;
+                    return Self::recursive_insert_static(child_ptr, key, new_depth + 1, value);
+                }
+                if ((*n).header.num_children as usize) < 16 {
                     let new_leaf = Leaf::alloc(key, value);
                     (*n).add_child(byte, TaggedPtr::from_leaf(new_leaf));
                     return None;
-                } else {
-                    // Grow to Node48
-                    let new_node = self.grow_node16(n);
-                    *node_ptr = TaggedPtr::from_node(new_node);
-                    let new_leaf = Leaf::alloc(key, value);
-                    (*new_node.as_ptr()).add_child(byte, TaggedPtr::from_leaf(new_leaf));
-                    return None;
                 }
+                let new_node = Self::grow_node16_static(n);
+                *node_ptr = TaggedPtr::from_node(new_node);
+                let new_leaf = Leaf::alloc(key, value);
+                (*new_node.as_ptr()).add_child(byte, TaggedPtr::from_leaf(new_leaf));
+                None
             }
             NodeType::Node48 => {
                 let n = node.as_node().as_ptr() as *mut Node48;
-                if let Some(_) = (*n).find_child(byte) {
-                    self.get_child_ptr48_mut(n, byte)
-                } else if (*n).header.num_children < 48 {
+                let idx = (*n).keys[byte as usize];
+                if idx != 0 {
+                    let child_ptr = &mut (*n).children[(idx - 1) as usize] as *mut TaggedPtr;
+                    return Self::recursive_insert_static(child_ptr, key, new_depth + 1, value);
+                }
+                if ((*n).header.num_children as usize) < 48 {
                     let new_leaf = Leaf::alloc(key, value);
                     (*n).add_child(byte, TaggedPtr::from_leaf(new_leaf));
                     return None;
-                } else {
-                    // Grow to Node256
-                    let new_node = self.grow_node48(n);
-                    *node_ptr = TaggedPtr::from_node(new_node);
-                    let new_leaf = Leaf::alloc(key, value);
-                    (*new_node.as_ptr()).add_child(byte, TaggedPtr::from_leaf(new_leaf));
-                    return None;
                 }
+                let new_node = Self::grow_node48_static(n);
+                *node_ptr = TaggedPtr::from_node(new_node);
+                let new_leaf = Leaf::alloc(key, value);
+                (*new_node.as_ptr()).add_child(byte, TaggedPtr::from_leaf(new_leaf));
+                None
             }
             NodeType::Node256 => {
                 let n = node.as_node().as_ptr() as *mut Node256;
-                if (*n).children[byte as usize].is_null() {
-                    let new_leaf = Leaf::alloc(key, value);
-                    (*n).add_child(byte, TaggedPtr::from_leaf(new_leaf));
-                    return None;
+                if !(*n).children[byte as usize].is_null() {
+                    let child_ptr = &mut (*n).children[byte as usize] as *mut TaggedPtr;
+                    return Self::recursive_insert_static(child_ptr, key, new_depth + 1, value);
                 }
-                &mut (*n).children[byte as usize] as *mut TaggedPtr
+                let new_leaf = Leaf::alloc(key, value);
+                (*n).add_child(byte, TaggedPtr::from_leaf(new_leaf));
+                None
             }
-        };
+        }
+    }
+    
+    unsafe fn prefix_mismatch_static(node: TaggedPtr, key: &[u8], depth: usize) -> usize {
+        let header = &*(node.as_node().as_ptr() as *const NodeHeader);
+        let prefix_len = header.partial_len as usize;
         
-        self.insert_recursive(child_ptr, key, depth + 1, value)
-    }
-    
-    #[inline]
-    unsafe fn get_child_ptr_mut(&self, node: *mut Node4, byte: u8) -> *mut TaggedPtr {
-        for i in 0..(*node).header.num_children as usize {
-            if (*node).keys[i] == byte {
-                return &mut (*node).children[i] as *mut TaggedPtr;
+        let check_len = prefix_len.min(MAX_PREFIX).min(key.len() - depth);
+        for i in 0..check_len {
+            if header.partial[i] != key[depth + i] {
+                return i;
             }
         }
-        std::ptr::null_mut()
-    }
-    
-    #[inline]
-    unsafe fn get_child_ptr16_mut(&self, node: *mut Node16, byte: u8) -> *mut TaggedPtr {
-        for i in 0..(*node).header.num_children as usize {
-            if (*node).keys[i] == byte {
-                return &mut (*node).children[i] as *mut TaggedPtr;
+        
+        // If prefix is longer than MAX_PREFIX, check against leaf
+        if prefix_len > MAX_PREFIX {
+            if let Some(min_leaf) = Self::minimum_static(node) {
+                let leaf_key = (*min_leaf.as_ptr()).key();
+                for i in MAX_PREFIX..prefix_len {
+                    if depth + i >= key.len() || depth + i >= leaf_key.len() {
+                        return i;
+                    }
+                    if leaf_key[depth + i] != key[depth + i] {
+                        return i;
+                    }
+                }
             }
         }
-        std::ptr::null_mut()
+        
+        prefix_len
     }
     
-    #[inline]
-    unsafe fn get_child_ptr48_mut(&self, node: *mut Node48, byte: u8) -> *mut TaggedPtr {
-        let idx = (*node).keys[byte as usize];
-        if idx == 0 {
-            std::ptr::null_mut()
-        } else {
-            &mut (*node).children[(idx - 1) as usize] as *mut TaggedPtr
-        }
-    }
-    
-    unsafe fn split_node(
-        &mut self,
-        _node_ptr: *mut TaggedPtr,
-        _key: &[u8],
-        _depth: usize,
-        _mismatch: usize,
-        _value: u64,
-    ) -> Option<u64> {
-        // Simplified: just return None for now
-        // Full implementation would split the node at the mismatch point
-        None
-    }
-    
-    unsafe fn grow_node4(&mut self, node: *mut Node4) -> NonNull<Node16> {
+    unsafe fn grow_node4_static(node: *mut Node4) -> NonNull<Node16> {
         let new_node = Node16::alloc();
         let new_ptr = new_node.as_ptr();
         
-        // Copy header
         (*new_ptr).header = (*node).header;
         (*new_ptr).header.node_type = NodeType::Node16;
         
-        // Copy children
-        for i in 0..(*node).header.num_children as usize {
+        let n = (*node).header.num_children as usize;
+        for i in 0..n {
             (*new_ptr).keys[i] = (*node).keys[i];
             (*new_ptr).children[i] = (*node).children[i];
         }
@@ -681,14 +785,15 @@ impl FastArt {
         new_node
     }
     
-    unsafe fn grow_node16(&mut self, node: *mut Node16) -> NonNull<Node48> {
+    unsafe fn grow_node16_static(node: *mut Node16) -> NonNull<Node48> {
         let new_node = Node48::alloc();
         let new_ptr = new_node.as_ptr();
         
         (*new_ptr).header = (*node).header;
         (*new_ptr).header.node_type = NodeType::Node48;
         
-        for i in 0..(*node).header.num_children as usize {
+        let n = (*node).header.num_children as usize;
+        for i in 0..n {
             (*new_ptr).children[i] = (*node).children[i];
             (*new_ptr).keys[(*node).keys[i] as usize] = (i + 1) as u8;
         }
@@ -697,7 +802,7 @@ impl FastArt {
         new_node
     }
     
-    unsafe fn grow_node48(&mut self, node: *mut Node48) -> NonNull<Node256> {
+    unsafe fn grow_node48_static(node: *mut Node48) -> NonNull<Node256> {
         let new_node = Node256::alloc();
         let new_ptr = new_node.as_ptr();
         
@@ -715,7 +820,6 @@ impl FastArt {
         new_node
     }
     
-    /// Free all nodes recursively
     unsafe fn free_recursive(node: TaggedPtr) {
         if node.is_null() {
             return;
@@ -726,7 +830,7 @@ impl FastArt {
             return;
         }
         
-        let header = node.as_node().as_ref();
+        let header = &*(node.as_node().as_ptr() as *const NodeHeader);
         match header.node_type {
             NodeType::Node4 => {
                 let n = &*(node.as_node().as_ptr() as *const Node4);
@@ -779,7 +883,6 @@ impl Drop for FastArt {
     }
 }
 
-// Safety: FastArt uses raw pointers but manages memory carefully
 unsafe impl Send for FastArt {}
 unsafe impl Sync for FastArt {}
 
@@ -798,7 +901,6 @@ mod tests {
         assert_eq!(art.get(b"world"), Some(2));
         assert_eq!(art.get(b"notfound"), None);
         
-        // Update
         assert_eq!(art.insert(b"hello", 3), Some(1));
         assert_eq!(art.get(b"hello"), Some(3));
         
@@ -845,7 +947,6 @@ mod tests {
         println!("Node256: {} bytes", std::mem::size_of::<Node256>());
         println!("Leaf: {} bytes (+ key)", std::mem::size_of::<Leaf>());
         
-        // Match libart sizes
         assert_eq!(std::mem::size_of::<NodeHeader>(), 16);
     }
 }
