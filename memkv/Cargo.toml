@@ -47,6 +47,9 @@ memory-stats = "1.0"
 tikv-jemallocator = "0.5"
 tikv-jemalloc-ctl = "0.5"
 
+# Existing Rust ART implementations for comparison
+art-tree = "0.2"
+
 [[bench]]
 name = "baseline"
 harness = false

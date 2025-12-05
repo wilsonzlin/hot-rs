@@ -28,16 +28,23 @@
 - [x] **Add jemalloc for accurate memory measurement**
 - [x] **ArenaArt**: Vec-based node storage (no Box overhead)
 
-### FINAL RESULTS: Accurate Memory Measurements with jemalloc
+### FINAL RESULTS: Large-Scale Benchmark (9.5M URLs, 467 MB raw)
 
-Using jemalloc's allocation tracking (967K URLs, 46 MB raw key data):
+Using jemalloc's allocation tracking:
 
-| Implementation | Memory | Bytes/Key | vs BTreeMap |
-|---------------|--------|-----------|-------------|
-| **FrozenLayer (FST)** | **40 MB** | **44** | **-65% (WINNER!)** |
-| std::BTreeMap | 115 MB | 125 | baseline |
-| ArenaArt | 180 MB | 195 | +57% |
-| UltraCompactArt | 192 MB | 208 | +67% |
+| Implementation | Total Memory | Overhead/Key | Notes |
+|---------------|--------------|--------------|-------|
+| **FrozenLayer (FST)** | **320 MB** | **-16 bytes (compression!)** | **WINNER for immutable** |
+| BTreeMap | 1145 MB | 74.6 bytes | Best mutable structure |
+| ArenaArt | 1449 MB | 108 bytes | Better than art-tree |
+| art-tree crate | 1961 MB | 164 bytes | Existing Rust ART |
+
+### Key Insights
+
+1. **FST achieves 2.4x compression** - stores 467 MB of keys in 194 MB!
+2. **BTreeMap is surprisingly efficient** - hard to beat for mutable data
+3. **ART has inherent overhead** - 1.5 nodes per key minimum
+4. **Allocation overhead matters** - ~48 bytes per Box in jemalloc
 
 ### Key Findings
 

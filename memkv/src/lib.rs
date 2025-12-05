@@ -55,6 +55,8 @@ pub mod art2;
 pub mod art_arena;
 pub mod art_compact;
 pub mod art_compact2;
+pub mod art_lean;
+pub mod art_optimized;
 pub mod encoding;
 pub mod frozen;
 pub mod simple;
@@ -66,6 +68,8 @@ pub use art_compact::{CompactArt, KeyRef};
 pub use art_compact2::{UltraCompactArt, DataRef, UltraNode};
 pub use art_arena::{ArenaArt, ArenaNode, ArenaArtStats};
 pub use frozen::{FrozenLayer, FrozenLayerBuilder, FrozenStats};
+pub use art_optimized::{OptimizedArt, OptArtStats};
+pub use art_lean::{LeanArt, LeanStats};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -2,16 +2,16 @@
 
 A Rust library designed for storing billions of string keys with extreme memory efficiency.
 
-## Key Results (967K URL Dataset, 46 MB raw data)
+## Key Results (9.5M URL Dataset, 467 MB raw keys)
 
-| Implementation | Memory | Bytes/Key | vs BTreeMap |
-|---------------|--------|-----------|-------------|
-| **FrozenLayer (FST)** | **40 MB** | **44** | **-65% ✓** |
-| std::BTreeMap | 115 MB | 125 | baseline |
-| ArenaArt | 180 MB | 195 | +57% |
-| UltraCompactArt | 192 MB | 208 | +67% |
+| Implementation | Total Memory | Overhead/Key | Notes |
+|---------------|--------------|--------------|-------|
+| **FrozenLayer (FST)** | **320 MB** | **-16 bytes** | **2.4x compression!** |
+| BTreeMap | 1145 MB | 75 bytes | Best for mutable data |
+| ArenaArt | 1449 MB | 108 bytes | Better than art-tree |
+| art-tree (crate) | 1961 MB | 164 bytes | Existing Rust ART |
 
-**FrozenLayer achieves 65% memory reduction** vs BTreeMap for immutable data.
+**FrozenLayer achieves 2.4x compression** - stores 467 MB of keys in only 194 MB!
 
 ## Features
 
