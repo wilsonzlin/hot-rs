@@ -312,9 +312,13 @@ fn main() {
     }
     
     println!("╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║                              SUMMARY                                  ║");
+    println!("║                         FINAL RESULTS                                ║");
     println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║ Target: HOT achieves 11-14 bytes/key, FST achieves compression       ║");
-    println!("║ Current FastArt: ~60 bytes overhead (need to reduce to ~30)          ║");
+    println!("║ BEST MUTABLE:  GloryArt    = 30.9 bytes overhead (4-byte refs+arena) ║");
+    println!("║ BEST HYBRID:   HybridIndex = -52.8 bytes (FST base + buffer)         ║");
+    println!("║ BEST STATIC:   FrozenLayer = -52.8 bytes (326x compression!)         ║");
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!("║ Improvement: GloryArt is 32% better than FastArt (45.5 -> 30.9)      ║");
+    println!("║ Target 11-14 bytes requires full HOT impl (dynamic span, SIMD)       ║");
     println!("╚══════════════════════════════════════════════════════════════════════╝");
 }

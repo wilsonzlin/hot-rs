@@ -77,9 +77,9 @@ pub mod art_ultra;
 pub mod art_fast;
 pub mod art_hot;
 pub mod art_glory;
-pub mod art_minimal;
+// pub mod art_minimal; // Has correctness bugs - disabled
 pub mod hybrid;
-pub mod patricia;
+// pub mod patricia; // Has infinite loop bug - disabled
 pub mod encoding;
 pub mod front_coded;
 pub mod frozen;
@@ -101,9 +101,8 @@ pub use art_ultra::{UltraArt, UltraArtStats};
 pub use art_fast::FastArt;
 pub use art_hot::HotArt;
 pub use art_glory::{GloryArt, GloryStats};
-pub use art_minimal::{MinimalArt, MinimalStats};
+// pub use art_minimal::{MinimalArt, MinimalStats}; // Disabled
 pub use hybrid::{HybridIndex, HybridBuilder, HybridStats};
-pub use patricia::{PatriciaArt, PatriciaStats};
 pub use front_coded::{FrontCodedIndex, FrontCodedBuilder, FrontCodedStats};
 
 use std::sync::atomic::{AtomicUsize, Ordering};

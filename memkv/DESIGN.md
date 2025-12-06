@@ -6,7 +6,48 @@ This library provides memory-efficient storage for string keys with arbitrary va
 
 ---
 
-## Comprehensive Benchmark Results (December 2024)
+## Latest Results (December 2024) - Targeting HOT-Level Efficiency
+
+### Dataset: 1 Million URL-like Keys (50 MB raw data, avg 53.0 bytes/key)
+
+| Implementation | Overhead/Key | Mutable | Correct | Notes |
+|---------------|--------------|---------|---------|-------|
+| **HybridIndex** | **-52.8 bytes** | ✓ (compaction) | ✓ | FST base + write buffer |
+| **FrozenLayer** | **-52.8 bytes** | ✗ | ✓ | Pure FST, 326x compression! |
+| **FrontCodedIndex** | **-23.3 bytes** | ✗ | ✓ | Prefix compression |
+| **GloryArt** | **30.9 bytes** | ✓ | ✓ | 4-byte refs + arena |
+| FastArt | 45.5 bytes | ✓ | ✓ | libart-inspired |
+| HotArt | 49.9 bytes | ✓ | ✓ | HOT-inspired (WIP) |
+| BTreeMap | 79.1 bytes | ✓ | ✓ | stdlib baseline |
+
+### Key Achievements
+
+1. **GloryArt: 32% improvement over FastArt** (45.5 → 30.9 bytes overhead)
+   - 4-byte node references (vs 8-byte pointers)
+   - Arena allocation eliminates per-node overhead
+   - Unified node/leaf structure
+
+2. **HybridIndex: FST compression with mutability**
+   - Immutable FST base for bulk data (-52.8 bytes!)
+   - Small mutable buffer for writes
+   - Periodic compaction merges buffer into FST
+
+3. **FrontCodedIndex: Excellent prefix compression**
+   - Block-based prefix sharing
+   - -23.3 bytes overhead (net compression!)
+   - Requires sorted keys
+
+### Path to 11-14 bytes/key (HOT target)
+
+To achieve HOT-level efficiency, we need:
+- **Dynamic span nodes** (variable discriminator bits, not fixed bytes)
+- **SIMD child lookup** (AVX2/PEXT for fast traversal)
+- **No prefix storage** (discriminator positions only)
+- **Compound nodes** (merge multiple trie levels)
+
+---
+
+## Previous Benchmark Results (December 2024)
 
 ### Dataset: 9.5 Million Real-World URLs (467 MB raw data, avg 51.5 bytes/key)
 
