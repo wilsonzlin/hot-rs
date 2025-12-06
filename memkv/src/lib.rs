@@ -81,6 +81,7 @@ pub mod art_glory;
 pub mod hybrid;
 pub mod hot;
 pub mod hot2;
+pub mod glory;
 // pub mod patricia; // Has infinite loop bug - disabled
 pub mod encoding;
 pub mod front_coded;
@@ -107,6 +108,7 @@ pub use art_glory::{GloryArt, GloryStats};
 pub use hybrid::{HybridIndex, HybridBuilder, HybridStats};
 pub use hot::{TrueHot, TrueHotStats};
 pub use hot2::{Hot2, Hot2Stats};
+pub use glory::{Glory, GloryStats as UltimateGloryStats};
 pub use front_coded::{FrontCodedIndex, FrontCodedBuilder, FrontCodedStats};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
