@@ -106,6 +106,37 @@ fn main() {
         drop(tree);
     }
     
+    // ========== TrueHot ==========
+    println!("Testing TrueHot (bit-level discrimination)...");
+    {
+        use memkv::TrueHot;
+        
+        let before_rss = get_rss();
+        let before_alloc = get_allocated();
+        let mut tree = TrueHot::new();
+        for (i, key) in keys.iter().enumerate() {
+            tree.insert(key.as_bytes(), i as u64);
+        }
+        let after_rss = get_rss();
+        let after_alloc = get_allocated();
+        let rss_alloc = after_rss.saturating_sub(before_rss);
+        let heap_alloc = after_alloc.saturating_sub(before_alloc);
+        
+        let correct = keys.iter().enumerate()
+            .take(10000)
+            .filter(|(i, key)| tree.get(key.as_bytes()) == Some(*i as u64))
+            .count();
+        
+        let stats = tree.memory_stats();
+        let overhead = (stats.overhead_bytes as f64) / count as f64;
+        println!("  Memory: {} MB (heap: {} MB), {:.1} bytes overhead/key", 
+                 rss_alloc / (1024*1024), heap_alloc / (1024*1024), overhead);
+        println!("  Keys: {} KB, Leaves: {} KB, Nodes: {} KB", 
+                 stats.keys_bytes/1024, stats.leaves_bytes/1024, stats.nodes_bytes/1024);
+        println!("  Correctness: {}/10000\n", correct);
+        drop(tree);
+    }
+    
     // ========== GloryArt ==========
     println!("Testing GloryArt (4-byte refs, arena)...");
     {
@@ -318,7 +349,12 @@ fn main() {
     println!("║ BEST HYBRID:   HybridIndex = -52.8 bytes (FST base + buffer)         ║");
     println!("║ BEST STATIC:   FrozenLayer = -52.8 bytes (326x compression!)         ║");
     println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║ Improvement: GloryArt is 32% better than FastArt (45.5 -> 30.9)      ║");
-    println!("║ Target 11-14 bytes requires full HOT impl (dynamic span, SIMD)       ║");
+    println!("║ Achievements:                                                        ║");
+    println!("║ • GloryArt: 32% better than FastArt (45.5 -> 30.9 bytes)             ║");
+    println!("║ • HybridIndex: FST compression with O(log n) mutable inserts         ║");
+    println!("║ • FrontCodedIndex: Prefix compression for sorted data                ║");
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!("║ HOT's 11-14 bytes needs: sparse bitmaps, SIMD, compound nodes        ║");
+    println!("║ Theoretical min: ~14 bytes (8 value + 6 key index)                   ║");
     println!("╚══════════════════════════════════════════════════════════════════════╝");
 }
