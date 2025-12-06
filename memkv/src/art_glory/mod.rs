@@ -32,15 +32,17 @@ impl Ref {
     fn offset(self) -> usize { self.0 as usize }
 }
 
-/// Compact node header (8 bytes total for alignment)
+/// Compact node header (4 bytes)
 /// Byte 0: node_type (2 bits) | has_value (1 bit) | num_children (5 bits for N4/N16)
-/// Byte 1: prefix_len (8 bits, supports up to 255)
-/// Bytes 2-7: reserved for value if has_value, else part of prefix
+/// Bytes 1-2: prefix_len (16 bits, supports up to 65535)
+/// Byte 3: reserved
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct NodeHeader {
     flags: u8,         // type(2) | has_value(1) | num_children_low(5)
-    prefix_len: u8,    // 0-255
+    prefix_len_lo: u8, // low 8 bits of prefix_len
+    prefix_len_hi: u8, // high 8 bits of prefix_len
+    _reserved: u8,
 }
 
 impl NodeHeader {
@@ -86,14 +88,22 @@ impl NodeHeader {
     }
     
     #[inline]
+    fn prefix_len(self) -> usize {
+        (self.prefix_len_lo as usize) | ((self.prefix_len_hi as usize) << 8)
+    }
+    
+    #[inline]
     fn new(node_type: u8, has_value: bool, num_children: usize, prefix_len: usize) -> Self {
         let type_bits = (node_type & 0b11) << Self::TYPE_SHIFT;
         let value_bit = if has_value { Self::HAS_VALUE } else { 0 };
         let num_bits = (num_children as u8) & Self::NUM_CHILDREN_MASK;
+        let prefix_len = prefix_len.min(65535);
         
         Self {
             flags: type_bits | value_bit | num_bits,
-            prefix_len: prefix_len.min(255) as u8,
+            prefix_len_lo: prefix_len as u8,
+            prefix_len_hi: (prefix_len >> 8) as u8,
+            _reserved: 0,
         }
     }
 }
@@ -164,14 +174,18 @@ impl Arena {
     fn read_header(&self, offset: usize) -> NodeHeader {
         NodeHeader {
             flags: self.data[offset],
-            prefix_len: self.data[offset + 1],
+            prefix_len_lo: self.data[offset + 1],
+            prefix_len_hi: self.data[offset + 2],
+            _reserved: self.data[offset + 3],
         }
     }
     
     #[inline]
     fn write_header(&mut self, offset: usize, header: NodeHeader) {
         self.data[offset] = header.flags;
-        self.data[offset + 1] = header.prefix_len;
+        self.data[offset + 1] = header.prefix_len_lo;
+        self.data[offset + 2] = header.prefix_len_hi;
+        self.data[offset + 3] = header._reserved;
     }
     
     #[inline]
@@ -206,7 +220,7 @@ pub struct GloryArt {
 
 // Helper for node layout
 impl GloryArt {
-    const HEADER_SIZE: usize = 2;
+    const HEADER_SIZE: usize = 4; // flags(1) + prefix_len(2) + reserved(1)
     const VALUE_SIZE: usize = 8;
     const REF_SIZE: usize = 4;
     
@@ -282,7 +296,7 @@ impl GloryArt {
             let offset = node_ref.offset();
             let header = self.arena.read_header(offset);
             let has_value = header.has_value();
-            let prefix_len = header.prefix_len as usize;
+            let prefix_len = header.prefix_len();
             
             // Check prefix
             if prefix_len > 0 {
@@ -390,7 +404,7 @@ impl GloryArt {
         let offset = node_ref.offset();
         let header = self.arena.read_header(offset);
         let has_value = header.has_value();
-        let prefix_len = header.prefix_len as usize;
+        let prefix_len = header.prefix_len();
         let node_type = header.node_type_raw();
         
         // Check prefix match
@@ -558,7 +572,7 @@ impl GloryArt {
         let old_offset = old_ref.offset();
         let old_header = self.arena.read_header(old_offset);
         let old_has_value = old_header.has_value();
-        let old_prefix_len = old_header.prefix_len as usize;
+        let old_prefix_len = old_header.prefix_len();
         let old_type = old_header.node_type_raw();
         let old_num_children = old_header.num_children();
         
@@ -637,7 +651,7 @@ impl GloryArt {
     fn clone_node_with_value(&mut self, old_ref: Ref, value: u64) -> Ref {
         let old_offset = old_ref.offset();
         let old_header = self.arena.read_header(old_offset);
-        let old_prefix_len = old_header.prefix_len as usize;
+        let old_prefix_len = old_header.prefix_len();
         let old_type = old_header.node_type_raw();
         let old_num_children = old_header.num_children();
         
@@ -714,7 +728,7 @@ impl GloryArt {
         let offset = node_ref.offset();
         let mut header = self.arena.read_header(offset);
         let has_value = header.has_value();
-        let prefix_len = header.prefix_len as usize;
+        let prefix_len = header.prefix_len();
         let num_children = header.num_children();
         
         let keys_off = Self::keys_offset(offset, has_value, prefix_len);
@@ -733,7 +747,7 @@ impl GloryArt {
         let offset = node_ref.offset();
         let mut header = self.arena.read_header(offset);
         let has_value = header.has_value();
-        let prefix_len = header.prefix_len as usize;
+        let prefix_len = header.prefix_len();
         let node_type = header.node_type_raw();
         let num_children = header.num_children();
         
@@ -755,11 +769,28 @@ impl GloryArt {
                 self.arena.write_header(offset, header);
                 true
             }
-            NodeHeader::TYPE_N48 if num_children < 48 => {
-                self.arena.write_u8(keys_off + byte as usize, (num_children + 1) as u8);
-                self.arena.write_ref(children_off + num_children * Self::REF_SIZE, child);
-                header.set_num_children(num_children + 1);
-                self.arena.write_header(offset, header);
+            NodeHeader::TYPE_N48 => {
+                // For N48, we need to find an empty slot since num_children may wrap
+                // Count actual children and find empty slot
+                let mut actual_count = 0;
+                let mut empty_slot = None;
+                for i in 0..48 {
+                    let c = self.arena.read_ref(children_off + i * Self::REF_SIZE);
+                    if c.is_null() {
+                        if empty_slot.is_none() {
+                            empty_slot = Some(i);
+                        }
+                    } else {
+                        actual_count += 1;
+                    }
+                }
+                if actual_count >= 48 {
+                    return false; // Need to grow to N256
+                }
+                let slot = empty_slot.unwrap();
+                self.arena.write_u8(keys_off + byte as usize, (slot + 1) as u8);
+                self.arena.write_ref(children_off + slot * Self::REF_SIZE, child);
+                // Don't rely on header num_children for N48
                 true
             }
             NodeHeader::TYPE_N256 => {
@@ -779,7 +810,7 @@ impl GloryArt {
         let old_offset = old_ref.offset();
         let old_header = self.arena.read_header(old_offset);
         let has_value = old_header.has_value();
-        let prefix_len = old_header.prefix_len as usize;
+        let prefix_len = old_header.prefix_len();
         let old_type = old_header.node_type_raw();
         let num_children = old_header.num_children();
         

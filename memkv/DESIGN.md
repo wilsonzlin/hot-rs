@@ -6,48 +6,92 @@ This library provides memory-efficient storage for string keys with arbitrary va
 
 ---
 
-## 🎉 GLORY ACHIEVED: HOT-Level Memory Efficiency!
+## 📊 REAL WORLD BENCHMARK: 10 Million URLs
 
-### Dataset: 1 Million URL-like Keys (50 MB raw data, avg 53.0 bytes/key)
+### Dataset: Real URLs from Web Crawl (516 MB raw data, avg 51.7 bytes/key)
 
-| Implementation | Overhead/Key | Mutable | Notes |
-|---------------|--------------|---------|-------|
-| **🏆 GLORY** | **14.0 bytes** | ✓ (sorted) | **HOT TARGET ACHIEVED!** |
-| HybridIndex | -52.8 bytes | ✓ (compaction) | FST base + buffer |
-| FrozenLayer | -52.8 bytes | ✗ | 326x compression! |
-| FrontCodedIndex | -23.3 bytes | ✗ | Prefix compression |
-| GloryArt | 30.9 bytes | ✓ | 4-byte refs + arena |
-| FastArt | 45.5 bytes | ✓ | libart-inspired |
-| BTreeMap | 79.1 bytes | ✓ | stdlib baseline |
+| Implementation | Memory | Overhead/Key | Insert/s | Lookup/s | Correct | Notes |
+|---------------|--------|--------------|----------|----------|---------|-------|
+| **FST (FrozenLayer)** | 335.8 MB | **-18.1 bytes** | 590K | 2.4M | ✓ | Compression! |
+| **HybridIndex** | 335.6 MB | **-18.1 bytes** | 546K | 2.3M | ✓ | FST + buffer |
+| **GLORY (sorted)** | 713.0 MB | **+19.6 bytes** | 4.6M | 5.9M | ✓ | Near HOT target |
+| GloryArt | 1,073 MB | +55.7 bytes | 3.3M | 6.4M | ✓ | Arena ART |
+| FastArt | 1,163 MB | +64.6 bytes | 3.6M | 8.1M | ✓ | SIMD Node16 |
+| BTreeMap | 1,262 MB | +74.5 bytes | 3.7M | 6.4M | ✓ | Baseline |
+| ProperHot | 1,409 MB | +89.3 bytes | 1.1M | 1.9M | ✓ | HOT-inspired |
 
-### GLORY: The Winner (14 bytes/key overhead)
+### Key Findings with Real Data
 
-**Design:** Sorted array with binary search
-- O(log n) lookup
-- O(n) insert (O(1) if data is pre-sorted)
-- 14 bytes overhead = 8 (value) + 2 (key_len) + 4 (offset)
-- Pre-allocation eliminates Vec capacity overhead
+1. **FST achieves 18 bytes COMPRESSION** (negative overhead!)
+   - 516 MB keys → 336 MB storage = 1.5x compression
+   - Best for immutable/frozen data
+   - 2.4M lookups/sec
 
-**Improvements:**
-- **5.6x better** than BTreeMap (79.1 → 14.0 bytes)
-- **3.3x better** than FastArt (45.6 → 14.0 bytes)
-- Matches HOT paper's 11-14 bytes/key target!
+2. **GLORY at 19.6 bytes** - Closest to HOT target for mutable data
+   - Only 5 bytes above HOT paper target (11-14 bytes)
+   - 4.6M inserts/sec for sorted data
+   - Simple sorted array design
 
-### Other Achievements
+3. **All implementations exceed 100K ops/sec requirement**
+   - FastArt: 8.1M lookups/sec (fastest)
+   - BTreeMap: 6.4M lookups/sec
+   - Even FST at 2.4M is 24x above target
 
-1. **HybridIndex: FST compression with mutability**
-   - Immutable FST base for bulk data (-52.8 bytes!)
-   - Small mutable buffer for writes
-   - Periodic compaction merges buffer into FST
+4. **Performance vs Memory tradeoff**
+   - Want speed? Use FastArt (8.1M lookups, 64.6 bytes overhead)
+   - Want memory? Use FST (-18 bytes) or GLORY (19.6 bytes)
+   - Want both? Use HybridIndex (FST base + mutable buffer)
 
-2. **GloryArt: Best pure trie** (30.9 bytes overhead)
-   - 4-byte node references (vs 8-byte pointers)
-   - Arena allocation eliminates per-node overhead
-   - 32% better than FastArt
+---
 
-3. **FrontCodedIndex: Excellent prefix compression**
-   - -23.3 bytes overhead (net compression!)
-   - Block-based prefix sharing
+## SOTA Research Implementation Status
+
+### ✅ Implemented
+
+| Research | Implementation | Status | Notes |
+|----------|---------------|--------|-------|
+| **Adaptive Radix Tree (ART)** | FastArt, GloryArt | ✅ Working | Multiple variants |
+| **SIMD Node16** | FastArt | ✅ Working | SSE2/AVX2 intrinsics |
+| **Finite State Transducers (FST)** | FrozenLayer, HybridIndex | ✅ Working | Uses `fst` crate |
+| **Hybrid FST+Mutable** | HybridIndex | ✅ Working | FST base + buffer |
+| **HOT-inspired trie** | ProperHot | ✅ Working | Bit-level discrimination |
+| **Pointer compression** | GloryArt | ✅ Working | 4-byte refs vs 8-byte pointers |
+| **Arena allocation** | GloryArt, ArenaArt | ✅ Working | Single allocation |
+| **Front coding** | FrontCodedIndex | ✅ Working | Prefix compression |
+| **Sorted array** | GLORY | ✅ Working | Simple, near-optimal |
+
+### ⚠️ Partially Implemented
+
+| Research | Issue | Notes |
+|----------|-------|-------|
+| **HOT compound nodes** | ProperHot uses span-1 only | Higher spans (4-8) not implemented |
+| **PEXT/PDEP SIMD** | Not implemented | Would improve HOT bit extraction |
+
+### ❌ Not Implemented
+
+| Research | Reason |
+|----------|--------|
+| HAT-Trie | ART is better for our use case |
+| Judy Arrays | Too complex (20K lines C) |
+| LOUDS succinct trie | Static-only, similar to FST |
+| B+Tree with prefix compression | BTreeMap already good baseline |
+
+### Lessons Learned
+
+1. **Real data differs from synthetic benchmarks**
+   - HOT paper achieves 11-14 bytes on synthetic keys
+   - Real URLs give 19-90 bytes overhead for mutable tries
+   - FST achieves compression (-18 bytes) due to prefix/suffix sharing
+
+2. **Simple structures can beat complex ones**
+   - GLORY (sorted array) beats ProperHot (HOT-inspired)
+   - BTreeMap beats some ART variants
+   - FST beats everything for immutable data
+
+3. **Memory overhead scales with data characteristics**
+   - High prefix sharing → ART works well
+   - Random keys → simple structures win
+   - Sorted data → FST/GLORY optimal
 
 ---
 
