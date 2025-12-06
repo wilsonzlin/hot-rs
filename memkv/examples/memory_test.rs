@@ -106,6 +106,37 @@ fn main() {
         drop(tree);
     }
     
+    // ========== GloryArt ==========
+    println!("Testing GloryArt (4-byte refs, arena)...");
+    {
+        use memkv::GloryArt;
+        
+        let before_rss = get_rss();
+        let before_alloc = get_allocated();
+        let mut tree = GloryArt::new();
+        for (i, key) in keys.iter().enumerate() {
+            tree.insert(key.as_bytes(), i as u64);
+        }
+        let after_rss = get_rss();
+        let after_alloc = get_allocated();
+        let rss_alloc = after_rss.saturating_sub(before_rss);
+        let heap_alloc = after_alloc.saturating_sub(before_alloc);
+        let alloc = rss_alloc.max(heap_alloc);
+        
+        let correct = keys.iter().enumerate()
+            .take(10000)
+            .filter(|(i, key)| tree.get(key.as_bytes()) == Some(*i as u64))
+            .count();
+        
+        let stats = tree.memory_stats();
+        let overhead = (alloc as f64 - data_size as f64) / count as f64;
+        println!("  Memory: {} MB (heap: {} MB), {:.1} bytes overhead/key", 
+                 rss_alloc / (1024*1024), heap_alloc / (1024*1024), overhead);
+        println!("  Arena bytes: {}, bytes/key: {:.1}", stats.arena_bytes, stats.bytes_per_key);
+        println!("  Correctness: {}/10000\n", correct);
+        drop(tree);
+    }
+    
     // ========== UltraArt ==========
     println!("Testing UltraArt...");
     {
@@ -191,6 +222,37 @@ fn main() {
                  stats.values_bytes as f64 / 1024.0);
         println!("  Correctness: {}/10000\n", correct);
         drop(front_coded);
+    }
+    
+    // ========== HybridIndex ==========
+    println!("Testing HybridIndex (FST + buffer)...");
+    {
+        use memkv::HybridBuilder;
+        
+        // Sort keys for building
+        let mut sorted: Vec<_> = keys.iter().enumerate().collect();
+        sorted.sort_by(|a, b| a.1.cmp(b.1));
+        
+        let before = get_allocated();
+        let mut builder = HybridBuilder::new();
+        for (i, key) in &sorted {
+            builder.add(key.as_bytes(), *i as u64);
+        }
+        let hybrid = builder.finish();
+        let after = get_allocated();
+        let alloc = after - before;
+        
+        let correct = keys.iter().enumerate()
+            .take(10000)
+            .filter(|(i, key)| hybrid.get(key.as_bytes()) == Some(*i as u64))
+            .count();
+        
+        let stats = hybrid.memory_stats();
+        let overhead = (alloc as f64 - data_size as f64) / count as f64;
+        println!("  Memory: {} MB, {:.1} bytes overhead/key", alloc / (1024*1024), overhead);
+        println!("  FST bytes: {}, buffer: {} entries", stats.frozen_bytes, stats.buffer_entries);
+        println!("  Correctness: {}/10000\n", correct);
+        drop(hybrid);
     }
     
     // ========== FrozenLayer (FST) ==========
