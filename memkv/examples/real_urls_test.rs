@@ -243,17 +243,17 @@ fn main() {
                  memory as f64 / 1e6, overhead, insert_ops, lookup_ops, if ok { "✓" } else { "✗" });
     }
     
-    // DeltaCompact (delta-encoded offsets)
+    // MinimalSorted (implicit values = index)
     {
-        use memkv::DeltaCompact;
+        use memkv::MinimalSorted;
         let mut sorted: Vec<_> = keys.iter().enumerate().collect();
         sorted.sort_by(|a, b| a.1.cmp(b.1));
         
         let before = get_allocated();
-        let mut tree = DeltaCompact::with_capacity(key_count, total_key_bytes);
+        let mut tree = MinimalSorted::with_capacity(total_key_bytes, key_count);
         let start = Instant::now();
-        for (i, key) in &sorted {
-            tree.insert_sorted(key.as_bytes(), *i as u64);
+        for (_i, key) in &sorted {
+            tree.push(key.as_bytes());
         }
         let insert_time = start.elapsed();
         let after = get_allocated();
@@ -269,7 +269,37 @@ fn main() {
         let lookup_ops = key_count as f64 / start.elapsed().as_secs_f64();
         let ok = found == key_count;
         
-        println!("║ DeltaCompact     │ {:>7.1}MB │ {:>+7.1} B/K │ {:>9.0} │ {:>8.0} │ {:>3} ║",
+        println!("║ MinimalSorted    │ {:>7.1}MB │ {:>+7.1} B/K │ {:>9.0} │ {:>8.0} │ {:>3} ║",
+                 memory as f64 / 1e6, overhead, insert_ops, lookup_ops, if ok { "✓" } else { "✗" });
+    }
+    
+    // VarintMinimal (varint key lengths)
+    {
+        use memkv::VarintMinimal;
+        let mut sorted: Vec<_> = keys.iter().enumerate().collect();
+        sorted.sort_by(|a, b| a.1.cmp(b.1));
+        
+        let before = get_allocated();
+        let mut tree = VarintMinimal::with_capacity(total_key_bytes, key_count);
+        let start = Instant::now();
+        for (_i, key) in &sorted {
+            tree.push(key.as_bytes());
+        }
+        let insert_time = start.elapsed();
+        let after = get_allocated();
+        let memory = after.saturating_sub(before);
+        let overhead = (memory as f64 - total_key_bytes as f64) / key_count as f64;
+        let insert_ops = key_count as f64 / insert_time.as_secs_f64();
+        
+        let start = Instant::now();
+        let mut found = 0;
+        for key in keys.iter() {
+            if tree.get(key.as_bytes()).is_some() { found += 1; }
+        }
+        let lookup_ops = key_count as f64 / start.elapsed().as_secs_f64();
+        let ok = found == key_count;
+        
+        println!("║ VarintMinimal    │ {:>7.1}MB │ {:>+7.1} B/K │ {:>9.0} │ {:>8.0} │ {:>3} ║",
                  memory as f64 / 1e6, overhead, insert_ops, lookup_ops, if ok { "✓" } else { "✗" });
     }
     

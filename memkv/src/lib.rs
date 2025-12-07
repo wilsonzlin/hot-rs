@@ -84,6 +84,7 @@ pub mod hot2;
 pub mod glory;
 pub mod hot_proper;
 pub mod ultra_compact;
+pub mod minimal;
 // pub mod patricia; // Has infinite loop bug - disabled
 pub mod encoding;
 pub mod front_coded;
@@ -113,6 +114,7 @@ pub use hot2::{Hot2, Hot2Stats};
 pub use glory::{Glory, GloryStats as UltimateGloryStats};
 pub use hot_proper::{ProperHot, ProperHotStats};
 pub use ultra_compact::{UltraCompact, UltraCompactStats, DeltaCompact, DeltaCompactStats};
+pub use minimal::{MinimalSorted, MinimalStats, Compact32, Compact32Stats, VarintMinimal, VarintMinimalStats};
 pub use front_coded::{FrontCodedIndex, FrontCodedBuilder, FrontCodedStats};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
