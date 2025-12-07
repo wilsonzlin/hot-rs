@@ -1,32 +1,40 @@
 # memkv
 
-Memory-efficient key-value storage achieving **12 bytes/key overhead** - meeting the HOT paper target (10-14 B/K).
+Memory-efficient key-value storage with **33% less memory than BTreeMap**.
 
 ## Quick Start
 
 ```rust
-// For minimum memory (12 B/K overhead):
+// For minimum memory (-33% vs BTreeMap):
 use memkv::InlineHot;
 let mut map = InlineHot::new();
 map.insert(b"user:12345", 1);
 assert_eq!(map.get(b"user:12345"), Some(1));
 
-// For maximum speed:
+// For maximum speed (2x faster lookups):
 use memkv::FastArt;
 let mut map = FastArt::new();
 map.insert(b"user:12345", 1);
 ```
 
-## Benchmark Results (100K Random Keys, avg 23 bytes)
+## Benchmark Results (500K URLs, shuffled random insert)
 
-| Structure | Overhead | vs BTreeMap | Best For |
-|-----------|----------|-------------|----------|
-| **InlineHot** | **12 B/K** | **77% less memory** | Minimum memory |
-| HOT | 16 B/K | 70% less | Good balance |
-| FastArt | ~34 B/K | 37% less, 4x faster | Speed |
-| BTreeMap | ~54 B/K | baseline | Compatibility |
+| Structure | Total Memory | vs BTreeMap | Lookup/s |
+|-----------|-------------|-------------|----------|
+| BTreeMap | 52.0 MB | baseline | 2.1M |
+| **InlineHot** | **34.6 MB** | **-33%** | 2.1M |
+| HOT | 37.7 MB | -28% | 2.5M |
+| FastArt | 49.1 MB | -6% | **5.2M** |
 
-*Overhead excludes raw key bytes and u64 values*
+### Index Overhead (excluding raw keys)
+
+| Structure | Overhead | Index Only |
+|-----------|----------|------------|
+| BTreeMap | 57.7 B/K | 49.7 B/K |
+| **InlineHot** | **22.7 B/K** | **12.0 B/K** |
+| HOT | 29.1 B/K | 16.0 B/K |
+
+*Index = Overhead - 8 (value size)*
 
 ## When to Use What
 

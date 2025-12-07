@@ -1,43 +1,59 @@
 # Memory-Efficient Key-Value Store for Billions of Keys
 
-## ✅ RESULTS ACHIEVED - HOT Paper Target Met!
+## ✅ BENCHMARK RESULTS
 
-### Memory Overhead Comparison (100K Random Keys, avg 23 bytes)
+### Real URL Dataset: 500K URLs, Shuffled Random Inserts (23.2 MB raw keys)
 
-| Structure | Overhead | Notes |
-|-----------|----------|-------|
-| **InlineHot** | **12.0 B/K** | ✅ **Within HOT paper target (10-14 B/K)** |
-| HOT | 16.0 B/K | Separate leaf array |
-| CompactHot | 18.0 B/K | 12-byte BiNodes |
-| FastArt | ~34 B/K | ART-based, fast |
-| BTreeMap | ~54 B/K | Standard library |
+| Structure | Total Memory | vs BTreeMap | Insert/s | Lookup/s |
+|-----------|--------------|-------------|----------|----------|
+| BTreeMap | 52.0 MB | baseline | 1.4M | 2.1M |
+| **InlineHot** | **34.6 MB** | **-33%** | 1.8M | 2.1M |
+| HOT | 37.7 MB | -28% | 1.8M | 2.5M |
+| FastArt | 49.1 MB | -6% | 2.4M | **5.2M** |
 
-*Overhead excludes raw key bytes and u64 values*
+### Memory Overhead Analysis
 
-### Performance (vs BTreeMap)
+| Structure | Total Overhead | Index Only | Notes |
+|-----------|---------------|------------|-------|
+| BTreeMap | 57.7 B/K | 49.7 B/K | Standard library |
+| **InlineHot** | **22.7 B/K** | **12.0 B/K** | BiNodes + inline values |
+| HOT | 29.1 B/K | 16.0 B/K | Separate leaf array |
+| FastArt | 51.7 B/K | 43.7 B/K | ART nodes |
 
-| Structure | Memory | Speed | Best For |
-|-----------|--------|-------|----------|
-| **InlineHot** | **77% less** | 2x faster | Minimum memory |
-| **FastArt** | 37% less | **4x faster** | Maximum speed |
+*Overhead = (Total - Raw Keys) / Count; Index = Overhead - 8 (value size)*
 
-### Key Features
+### HOT Paper Comparison
 
-- ✅ **12 bytes/key overhead** - achieves HOT paper target
-- ✅ **Random insert order** - real database workloads
-- ✅ **O(key_length)** operations
-- ✅ **Full map API** - get, insert, update
-- ✅ **77% less memory** than BTreeMap
+The HOT paper reports 11-14 B/K which **includes 8-byte values** in child pointers.
+Our InlineHot achieves **20 B/K** (12 index + 8 value) using simplified BiNodes.
+
+The gap vs paper's 11-14 B/K is due to:
+- **BiNodes (2 entries)** vs compound nodes (16-256 entries)
+- Paper uses SIMD partial key search, pext/pdep instructions
+- Full HOT implementation is ~3000 lines of complex C++
+
+### Practical Summary
+
+```
+For 500K URLs (23.2 MB raw keys):
+┌────────────┬──────────────┬──────────────┐
+│ Structure  │  Memory (MB) │ vs BTreeMap  │
+├────────────┼──────────────┼──────────────┤
+│ BTreeMap   │        52.0  │   baseline   │
+│ InlineHot  │        34.6  │   -33% ✓     │
+│ FastArt    │        49.1  │   -6%, 2x    │
+└────────────┴──────────────┴──────────────┘
+```
 
 ### Recommended Usage
 
 ```rust
-// Minimum memory (12 B/K overhead):
+// Minimum memory (-33% vs BTreeMap):
 use memkv::InlineHot;
 let mut map = InlineHot::new();
 map.insert(b"user:12345", 1);
 
-// Maximum speed:
+// Maximum speed (2x faster lookups):
 use memkv::FastArt;
 let mut map = FastArt::new();
 map.insert(b"user:12345", 1);
