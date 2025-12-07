@@ -1,109 +1,118 @@
 # memkv
 
-Memory-efficient key-value storage for string keys, designed for billion-key datasets.
+Memory-efficient key-value storage for string keys, designed as a **drop-in BTreeMap replacement** with better memory efficiency.
 
-## Benchmark Results (9.5M URLs, 467 MB raw data)
+## Quick Start (BTreeMap Replacement)
 
-| Implementation | Memory | Overhead/Key | Insert ops/s | Lookup ops/s |
-|---------------|--------|--------------|--------------|--------------|
-| **FrozenLayer (FST)** | 320 MB | **-16.2 bytes** | 721K | 3.3M |
-| **FastArt** | **1,040 MB** | **63.0 bytes** | **4.9M** | **8.6M** |
-| libart (C) | 1,123 MB | 72.2 bytes | 5.0M | 11.7M |
-| BTreeMap | 1,145 MB | 74.5 bytes | 3.3M | 8.5M |
-| ArenaArt | 1,449 MB | 108.1 bytes | 3.5M | 11.1M |
-| art-tree | 1,961 MB | 164.5 bytes | 3.2M | 5.5M |
-| blart | 3,286 MB | 310.3 bytes | 2.3M | 9.4M |
-| art | 6,953 MB | 713.9 bytes | 785K | 2.1M |
-| rart | 9,875 MB | 1,035.6 bytes | 797K | 3.6M |
+```rust
+use memkv::FastArt;
 
-**FST achieves COMPRESSION** (negative overhead) for immutable data.  
-**FastArt beats libart (C)** with 13% less memory and 100% correctness.  
-**FastArt is 16x better** than rart (the SIMD-optimized Rust ART)!
+// Create a map (replaces BTreeMap<Vec<u8>, u64>)
+let mut map = FastArt::new();
 
-## Usage
+// Insert keys in any order (random inserts supported!)
+map.insert(b"user:12345", 1);
+map.insert(b"session:abc", 2);
+map.insert(b"cache:item:42", 3);
 
-### FastArt (Mutable - Best Performance)
+// Lookup
+assert_eq!(map.get(b"user:12345"), Some(1));
+assert_eq!(map.get(b"missing"), None);
+
+// Update
+map.insert(b"user:12345", 100);
+assert_eq!(map.get(b"user:12345"), Some(100));
+```
+
+## Benchmark Results (1M Random Keys, avg 24 bytes)
+
+| Structure | Memory Overhead | Insert/s | Lookup/s | vs BTreeMap |
+|-----------|----------------|----------|----------|-------------|
+| **ProperHot** | **+39 B/K** | 1.5M | 3.0M | **44% less memory** |
+| **FastArt** | **+55 B/K** | **5.4M** | **8.9M** | **22% less, 2-3x faster** |
+| BTreeMap | +71 B/K | 2.7M | 3.5M | (baseline) |
+
+## When to Use What
+
+| Use Case | Recommended | Why |
+|----------|-------------|-----|
+| High throughput (u64 values) | `FastArt` | 22% less memory, 2-3x faster |
+| Lowest memory (u64 values) | `ProperHot` | 44% less memory |
+| Generic values (`V`) | `MemKV<V>` | Flexible, thread-safe |
+| Read-only/frozen data | `FrozenLayer` | Extreme compression |
+
+## API Reference
+
+### FastArt (Recommended for u64 values)
 
 ```rust
 use memkv::FastArt;
 
 let mut art = FastArt::new();
-art.insert(b"key1", 1);
-art.insert(b"key2", 2);
-
-assert_eq!(art.get(b"key1"), Some(1));
-assert_eq!(art.get(b"key2"), Some(2));
+art.insert(b"key", 42);           // Insert
+let v = art.get(b"key");          // Lookup: Some(42)
+let old = art.insert(b"key", 99); // Update: returns Some(42)
+let exists = art.get(b"key").is_some(); // Check existence
+let count = art.len();            // Number of keys
 ```
 
-### FrozenLayer (Immutable - Best Memory)
+### ProperHot (Best Memory Efficiency)
 
 ```rust
-use memkv::{FrozenLayerBuilder, FrozenLayer};
+use memkv::ProperHot;
 
-// Build from sorted keys
-let mut builder = FrozenLayerBuilder::new()?;
-builder.insert(b"key1", 1)?;
-builder.insert(b"key2", 2)?;
-let frozen: FrozenLayer = builder.finish()?;
-
-// Query
-assert_eq!(frozen.get(b"key1"), Some(1));
+let mut hot = ProperHot::new();
+hot.insert(b"key", 42);
+assert_eq!(hot.get(b"key"), Some(42));
 ```
 
-### ArenaArt (Mutable Alternative)
+### FrozenLayer (Immutable, Compressed)
 
 ```rust
-use memkv::ArenaArt;
+use memkv::FrozenLayer;
 
-let mut art = ArenaArt::new();
-art.insert(b"key1", 1);
-art.insert(b"key2", 2);
+// Must insert in sorted order
+let data = vec![
+    (b"apple".as_slice(), 1u64),
+    (b"banana".as_slice(), 2u64),
+    (b"cherry".as_slice(), 3u64),
+];
 
-assert_eq!(art.get(b"key1"), Some(&1));
+let frozen = FrozenLayer::from_sorted_iter(data).unwrap();
+assert_eq!(frozen.get(b"apple"), Some(1));
 ```
 
-## Key Findings
-
-1. **FST is unbeatable for immutable data** - provides 2.4x compression
-2. **FastArt beats libart (C)** - 63 vs 72 bytes overhead, pure Rust, 100% correct
-3. **BTreeMap is a solid baseline** - 75 bytes overhead, stdlib optimized
-4. **Fixed-key-size ART crates are disasters** - rart uses 1036 bytes per key!
-
-## Why Other Rust ARTs Fail
-
-Most Rust ART crates (rart, blart, art) use **fixed-size key arrays**:
+### MemKV<V> (Generic, Thread-Safe)
 
 ```rust
-// rart forces 256-byte keys regardless of actual length!
-let key: ArrayKey<256> = "example.com".into();  // 11 bytes → 256 bytes
+use memkv::MemKV;
+
+let map: MemKV<String> = MemKV::new();
+map.insert(b"key", "value".to_string());
+assert_eq!(map.get(b"key"), Some("value".to_string()));
 ```
 
-For URLs averaging 51.5 bytes, this wastes **204 bytes per key**!
+## Implementation Details
 
-| Crate | Overhead | vs FastArt |
-|-------|----------|------------|
-| FastArt | 63 b | 1.0x |
-| art-tree | 165 b | 2.6x |
-| blart | 310 b | 4.9x |
-| art | 714 b | 11.3x |
-| rart | 1,036 b | **16.4x** |
+FastArt is an Adaptive Radix Tree (ART) with:
 
-## FastArt Optimizations
+- **O(key_length)** operations (vs O(log n) for BTreeMap)
+- **SIMD-optimized** Node16 child lookup (SSE2)
+- **Pointer tagging** to distinguish leaves from internal nodes
+- **Path compression** to reduce tree height
+- **Compact node layouts** matching libart (C) design
 
-Inspired by libart (C), FastArt achieves excellent memory efficiency through:
+## Large Scale Benchmarks (9.5M URLs)
 
-1. **Pointer tagging** - Low bit distinguishes leaf vs internal node
-2. **Inline key storage** - Keys embedded directly after leaf header
-3. **Compact 16-byte headers** - Matching libart's proven design
-4. **Terminating byte** - Handles prefix keys correctly
-5. **Raw allocation** - Uses `std::alloc` for minimal overhead
+| Implementation | Memory | Overhead/Key | Insert ops/s |
+|---------------|--------|--------------|--------------|
+| **FrozenLayer (FST)** | 320 MB | **-16 bytes** | 721K |
+| **FastArt** | 1,040 MB | 63 bytes | 4.9M |
+| libart (C) | 1,123 MB | 72 bytes | 5.0M |
+| BTreeMap | 1,145 MB | 75 bytes | 3.3M |
 
-## Recommendations
-
-- **Read-heavy/frozen data**: Use `FrozenLayer`
-- **Mutable data**: Use `FastArt`
-- **Simple/portable**: Use `BTreeMap` 
-- **Hybrid workloads**: FST base + FastArt delta layer
+- **FrozenLayer** achieves compression (negative overhead) for immutable data
+- **FastArt** beats libart (C) with 13% less memory
 
 ## License
 
