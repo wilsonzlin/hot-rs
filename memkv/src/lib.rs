@@ -378,3 +378,6 @@ mod stress_tests {
         assert_eq!(correct, 10000, "Only {}/10000 correct", correct);
     }
 }
+
+pub mod hot_final;
+pub use hot_final::HOT;
