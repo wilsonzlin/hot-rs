@@ -1,38 +1,39 @@
-//! HOT: Height Optimized Trie
-//! 
-//! From "HOT: A Height Optimized Trie Index for Main-Memory Database Systems"
+//! HOT: Height Optimized Trie Index
+//!
+//! Implementation of "HOT: A Height Optimized Trie Index for Main-Memory Database Systems"
 //! Binna et al., SIGMOD 2018
 //!
-//! Key concepts:
-//! 1. **Compound nodes**: Multiple trie levels compressed into single nodes
-//! 2. **Variable span**: 1-8 discriminator bits per node, chosen based on data
-//! 3. **Partial keys**: Only store bits that discriminate between children
-//! 4. **Dense/Sparse representation**: Bitmap for sparse, array for dense
+//! Key ideas from the paper:
+//! 1. Compound nodes: Multiple trie levels combined using k discriminator bits
+//! 2. Discriminator bit positions: Only store bit positions that distinguish keys
+//! 3. Sparse representation: Use popcount for dense child storage
+//! 4. Height reduction: Fewer levels = less per-key overhead
 //!
-//! Target: 11-14 bytes/key overhead (not counting values)
+//! Node layout (for k discriminator bits, n actual children):
+//!   Header: [node_type:1][k:1][height:2][mask:4 or 32]
+//!   Discriminator bits: [pos0:2][pos1:2]...[posk-1:2] (k * 2 bytes)
+//!   Children: [child0:4][child1:4]...[childn-1:4] (n * 4 bytes)
+//!
+//! For k <= 5: use 4-byte mask (32 bits = 2^5)
+//! For k <= 8: use 32-byte mask (256 bits = 2^8)
 
-use std::ptr;
+use std::cmp::Ordering;
 
-/// Maximum span (discriminator bits per node)
-const MAX_SPAN: usize = 8;
+// Node types
+const TYPE_EMPTY: u8 = 0;
+const TYPE_LEAF: u8 = 1;
+const TYPE_INNER_SMALL: u8 = 2;  // k <= 5, 32-bit mask
+const TYPE_INNER_LARGE: u8 = 3; // k <= 8, 256-bit mask
 
-/// Node types
-const NODE_LEAF: u8 = 0;
-const NODE_SPARSE: u8 = 1;  // Bitmap + dense child array
-const NODE_DENSE: u8 = 2;   // Full 2^span children
+// Maximum span (discriminator bits per node)
+const MAX_SPAN_SMALL: usize = 5;  // 2^5 = 32 children max
+const MAX_SPAN_LARGE: usize = 8;  // 2^8 = 256 children max
 
-/// Sparse node layout (for span k with n children):
-/// [type:1][span:1][height:2][bitmap:2^k bits / 8 bytes][n × child:4]
-/// 
-/// Dense node layout (for span k):
-/// [type:1][span:1][height:2][2^k × child:4]
-///
-/// Leaf layout:
-/// [type:1][key_len:2][key...][value:8]
-
+/// Height Optimized Trie
 pub struct HOT {
+    // All data in single arena for cache efficiency
     arena: Vec<u8>,
-    root: u32,  // 0 = empty
+    root: u32,
     len: usize,
 }
 
@@ -44,243 +45,344 @@ impl HOT {
             len: 0,
         }
     }
-    
-    pub fn len(&self) -> usize { self.len }
-    pub fn is_empty(&self) -> bool { self.len == 0 }
-    
-    #[inline]
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    // Arena helpers
+    #[inline(always)]
     fn alloc(&mut self, size: usize) -> u32 {
-        let off = self.arena.len() as u32;
-        self.arena.resize(self.arena.len() + size, 0);
-        off
+        let off = self.arena.len();
+        self.arena.resize(off + size, 0);
+        off as u32
     }
-    
-    #[inline]
-    fn read_u16(&self, off: usize) -> u16 {
-        u16::from_le_bytes([self.arena[off], self.arena[off + 1]])
+
+    #[inline(always)]
+    fn u8_at(&self, off: u32) -> u8 {
+        self.arena[off as usize]
     }
-    
-    #[inline]
-    fn read_u32(&self, off: usize) -> u32 {
+
+    #[inline(always)]
+    fn set_u8(&mut self, off: u32, v: u8) {
+        self.arena[off as usize] = v;
+    }
+
+    #[inline(always)]
+    fn u16_at(&self, off: u32) -> u16 {
+        let o = off as usize;
+        u16::from_le_bytes([self.arena[o], self.arena[o + 1]])
+    }
+
+    #[inline(always)]
+    fn set_u16(&mut self, off: u32, v: u16) {
+        let o = off as usize;
+        let b = v.to_le_bytes();
+        self.arena[o] = b[0];
+        self.arena[o + 1] = b[1];
+    }
+
+    #[inline(always)]
+    fn u32_at(&self, off: u32) -> u32 {
+        let o = off as usize;
         u32::from_le_bytes([
-            self.arena[off], self.arena[off + 1],
-            self.arena[off + 2], self.arena[off + 3]
+            self.arena[o],
+            self.arena[o + 1],
+            self.arena[o + 2],
+            self.arena[o + 3],
         ])
     }
-    
-    #[inline]
-    fn read_u64(&self, off: usize) -> u64 {
+
+    #[inline(always)]
+    fn set_u32(&mut self, off: u32, v: u32) {
+        let o = off as usize;
+        let b = v.to_le_bytes();
+        self.arena[o] = b[0];
+        self.arena[o + 1] = b[1];
+        self.arena[o + 2] = b[2];
+        self.arena[o + 3] = b[3];
+    }
+
+    #[inline(always)]
+    fn u64_at(&self, off: u32) -> u64 {
+        let o = off as usize;
         u64::from_le_bytes([
-            self.arena[off], self.arena[off + 1], self.arena[off + 2], self.arena[off + 3],
-            self.arena[off + 4], self.arena[off + 5], self.arena[off + 6], self.arena[off + 7],
+            self.arena[o],
+            self.arena[o + 1],
+            self.arena[o + 2],
+            self.arena[o + 3],
+            self.arena[o + 4],
+            self.arena[o + 5],
+            self.arena[o + 6],
+            self.arena[o + 7],
         ])
     }
-    
-    #[inline]
-    fn write_u16(&mut self, off: usize, v: u16) {
-        self.arena[off..off + 2].copy_from_slice(&v.to_le_bytes());
+
+    #[inline(always)]
+    fn set_u64(&mut self, off: u32, v: u64) {
+        let o = off as usize;
+        let b = v.to_le_bytes();
+        for i in 0..8 {
+            self.arena[o + i] = b[i];
+        }
     }
-    
-    #[inline]
-    fn write_u32(&mut self, off: usize, v: u32) {
-        self.arena[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    
-    #[inline]
-    fn write_u64(&mut self, off: usize, v: u64) {
-        self.arena[off..off + 8].copy_from_slice(&v.to_le_bytes());
-    }
-    
-    /// Get bit at position from key (MSB first within bytes)
-    #[inline]
-    fn get_bit(key: &[u8], bit_pos: usize) -> usize {
-        let byte_idx = bit_pos / 8;
-        let bit_idx = 7 - (bit_pos % 8);
-        if byte_idx >= key.len() {
+
+    // Get bit at position (MSB-first within bytes)
+    #[inline(always)]
+    fn bit_at(key: &[u8], pos: u16) -> u8 {
+        let byte_idx = (pos / 8) as usize;
+        let bit_idx = 7 - (pos % 8);
+        if byte_idx < key.len() {
+            (key[byte_idx] >> bit_idx) & 1
+        } else {
             0
-        } else {
-            ((key[byte_idx] >> bit_idx) & 1) as usize
         }
     }
-    
-    /// Get span bits starting at bit_pos
+
+    // Extract index from key using discriminator bit positions
     #[inline]
-    fn get_span_bits(key: &[u8], bit_pos: usize, span: usize) -> usize {
-        let mut result = 0;
-        for i in 0..span {
-            result = (result << 1) | Self::get_bit(key, bit_pos + i);
+    fn extract_index(&self, key: &[u8], node: u32, k: usize) -> usize {
+        let disc_off = node + 8; // After header (type:1 + k:1 + height:2 + mask:4)
+        let mut idx = 0usize;
+        for i in 0..k {
+            let bit_pos = self.u16_at(disc_off + (i as u32) * 2);
+            idx = (idx << 1) | (Self::bit_at(key, bit_pos) as usize);
         }
-        result
+        idx
     }
-    
-    /// Find first differing bit position between two keys
-    fn first_diff_bit(a: &[u8], b: &[u8]) -> Option<usize> {
-        let max_len = a.len().max(b.len());
-        for i in 0..max_len {
-            let a_byte = if i < a.len() { a[i] } else { 0 };
-            let b_byte = if i < b.len() { b[i] } else { 0 };
-            if a_byte != b_byte {
-                let xor = a_byte ^ b_byte;
-                let bit_in_byte = 7 - xor.leading_zeros() as usize;
-                return Some(i * 8 + (7 - bit_in_byte));
-            }
-        }
-        if a.len() != b.len() {
-            Some(a.len().min(b.len()) * 8)
-        } else {
-            None
-        }
+
+    // Count set bits in mask up to position (exclusive)
+    #[inline]
+    fn popcount_before(&self, node: u32, pos: usize) -> usize {
+        let mask = self.u32_at(node + 4);
+        let below = mask & ((1u32 << pos) - 1);
+        below.count_ones() as usize
     }
-    
-    /// Create a leaf node
+
+    // Check if position is set in mask
+    #[inline]
+    fn mask_has(&self, node: u32, pos: usize) -> bool {
+        let mask = self.u32_at(node + 4);
+        (mask >> pos) & 1 == 1
+    }
+
+    // Set bit in mask
+    #[inline]
+    fn mask_set(&mut self, node: u32, pos: usize) {
+        let mask = self.u32_at(node + 4);
+        self.set_u32(node + 4, mask | (1u32 << pos));
+    }
+
+    // Count total children
+    #[inline]
+    fn child_count(&self, node: u32) -> usize {
+        let mask = self.u32_at(node + 4);
+        mask.count_ones() as usize
+    }
+
+    // Get child pointer at dense index
+    #[inline]
+    fn child_at(&self, node: u32, k: usize, dense_idx: usize) -> u32 {
+        let children_off = node + 8 + (k as u32) * 2;
+        self.u32_at(children_off + (dense_idx as u32) * 4)
+    }
+
+    // Leaf layout: [type:1][keylen:2][key bytes...][value:8]
     fn create_leaf(&mut self, key: &[u8], value: u64) -> u32 {
         let size = 1 + 2 + key.len() + 8;
-        let off = self.alloc(size) as usize;
-        self.arena[off] = NODE_LEAF;
-        self.write_u16(off + 1, key.len() as u16);
-        self.arena[off + 3..off + 3 + key.len()].copy_from_slice(key);
-        self.write_u64(off + 3 + key.len(), value);
-        off as u32
+        let off = self.alloc(size);
+        self.set_u8(off, TYPE_LEAF);
+        self.set_u16(off + 1, key.len() as u16);
+        self.arena[(off + 3) as usize..(off + 3) as usize + key.len()].copy_from_slice(key);
+        self.set_u64(off + 3 + key.len() as u32, value);
+        off
     }
-    
-    /// Get key from leaf
+
     fn leaf_key(&self, leaf: u32) -> &[u8] {
-        let off = leaf as usize;
-        let len = self.read_u16(off + 1) as usize;
-        &self.arena[off + 3..off + 3 + len]
+        let len = self.u16_at(leaf + 1) as usize;
+        &self.arena[(leaf + 3) as usize..(leaf + 3) as usize + len]
     }
-    
-    /// Get value from leaf
+
     fn leaf_value(&self, leaf: u32) -> u64 {
-        let off = leaf as usize;
-        let len = self.read_u16(off + 1) as usize;
-        self.read_u64(off + 3 + len)
+        let len = self.u16_at(leaf + 1) as usize;
+        self.u64_at(leaf + 3 + len as u32)
     }
-    
-    /// Set value in leaf
+
     fn set_leaf_value(&mut self, leaf: u32, value: u64) {
-        let off = leaf as usize;
-        let len = self.read_u16(off + 1) as usize;
-        self.write_u64(off + 3 + len, value);
+        let len = self.u16_at(leaf + 1) as usize;
+        self.set_u64(leaf + 3 + len as u32, value);
     }
-    
-    /// Create a sparse node with given children
-    /// bit_pos: starting bit position for discrimination
-    /// span: number of bits to use
-    /// children: (index, child_ptr) pairs
-    fn create_sparse_node(&mut self, bit_pos: u16, span: u8, children: &[(usize, u32)]) -> u32 {
+
+    // Find first differing bit between two keys
+    fn first_diff_bit(a: &[u8], b: &[u8]) -> Option<u16> {
+        let max_len = a.len().max(b.len());
+        for i in 0..max_len {
+            let a_byte = a.get(i).copied().unwrap_or(0);
+            let b_byte = b.get(i).copied().unwrap_or(0);
+            if a_byte != b_byte {
+                let xor = a_byte ^ b_byte;
+                let first_bit = 7 - (xor.leading_zeros() as u16);
+                return Some((i as u16) * 8 + (7 - first_bit));
+            }
+        }
+        None
+    }
+
+    // Create inner node with k=1 (single discriminator bit)
+    // Layout: [type:1][k:1][height:2][mask:4][disc_bit:2][children:4*n]
+    fn create_inner_k1(&mut self, disc_bit: u16, children: &[(usize, u32)]) -> u32 {
         let n = children.len();
-        let bitmap_bytes = (1usize << span).div_ceil(8);
-        let size = 1 + 1 + 2 + bitmap_bytes + n * 4;
-        let off = self.alloc(size) as usize;
-        
-        self.arena[off] = NODE_SPARSE;
-        self.arena[off + 1] = span;
-        self.write_u16(off + 2, bit_pos);
-        
-        // Clear bitmap
-        for i in 0..bitmap_bytes {
-            self.arena[off + 4 + i] = 0;
+        let size = 8 + 2 + n * 4; // header + 1 disc bit + children
+        let off = self.alloc(size);
+
+        self.set_u8(off, TYPE_INNER_SMALL);
+        self.set_u8(off + 1, 1); // k = 1
+        self.set_u16(off + 2, 0); // height (unused for now)
+
+        // Build mask
+        let mut mask = 0u32;
+        for &(idx, _) in children {
+            mask |= 1u32 << idx;
         }
-        
-        // Set bitmap bits and write children
-        let bitmap_off = off + 4;
-        let children_off = off + 4 + bitmap_bytes;
-        
-        for (i, &(idx, child)) in children.iter().enumerate() {
-            // Set bit in bitmap
-            let byte_idx = idx / 8;
-            let bit_idx = idx % 8;
-            self.arena[bitmap_off + byte_idx] |= 1 << bit_idx;
-            // Write child
-            self.write_u32(children_off + i * 4, child);
+        self.set_u32(off + 4, mask);
+
+        // Discriminator bit
+        self.set_u16(off + 8, disc_bit);
+
+        // Children (stored densely)
+        let children_off = off + 10;
+        for (i, &(_, child)) in children.iter().enumerate() {
+            self.set_u32(children_off + (i as u32) * 4, child);
         }
-        
-        off as u32
+
+        off
     }
-    
-    /// Lookup child in sparse node
-    fn sparse_lookup(&self, node: u32, child_idx: usize) -> Option<u32> {
-        let off = node as usize;
-        let span = self.arena[off + 1] as usize;
-        let bitmap_bytes = (1usize << span).div_ceil(8);
-        let bitmap_off = off + 4;
-        
-        // Check if bit is set
-        let byte_idx = child_idx / 8;
-        let bit_idx = child_idx % 8;
-        if (self.arena[bitmap_off + byte_idx] >> bit_idx) & 1 == 0 {
-            return None;
-        }
-        
-        // Count bits before this position to find child index
-        let mut count = 0;
-        for i in 0..child_idx {
-            let bi = i / 8;
-            let bit = i % 8;
-            if (self.arena[bitmap_off + bi] >> bit) & 1 != 0 {
-                count += 1;
+
+    // Rebuild inner node with new child added
+    fn rebuild_inner_with_child(&mut self, old_node: u32, new_idx: usize, new_child: u32) -> u32 {
+        let k = self.u8_at(old_node + 1) as usize;
+        let old_mask = self.u32_at(old_node + 4);
+        let old_count = old_mask.count_ones() as usize;
+
+        // Collect old children with their indices
+        let mut all_children: Vec<(usize, u32)> = Vec::with_capacity(old_count + 1);
+        let disc_off = old_node + 8;
+        let children_off = old_node + 8 + (k as u32) * 2;
+
+        let mut dense_idx = 0;
+        for idx in 0..(1usize << k) {
+            if (old_mask >> idx) & 1 == 1 {
+                let child = self.u32_at(children_off + (dense_idx as u32) * 4);
+                all_children.push((idx, child));
+                dense_idx += 1;
             }
         }
-        
-        let children_off = off + 4 + bitmap_bytes;
-        Some(self.read_u32(children_off + count * 4))
-    }
-    
-    /// Get span and bit_pos from node
-    fn node_info(&self, node: u32) -> (u8, u16) {
-        let off = node as usize;
-        (self.arena[off + 1], self.read_u16(off + 2))
-    }
-    
-    /// Count children in sparse node
-    fn sparse_child_count(&self, node: u32) -> usize {
-        let off = node as usize;
-        let span = self.arena[off + 1] as usize;
-        let bitmap_bytes = (1usize << span).div_ceil(8);
-        let bitmap_off = off + 4;
-        
-        let mut count = 0;
-        for i in 0..bitmap_bytes {
-            count += self.arena[bitmap_off + i].count_ones() as usize;
+
+        // Add new child
+        all_children.push((new_idx, new_child));
+        all_children.sort_by_key(|&(idx, _)| idx);
+
+        // Copy discriminator bits
+        let mut disc_bits: Vec<u16> = Vec::with_capacity(k);
+        for i in 0..k {
+            disc_bits.push(self.u16_at(disc_off + (i as u32) * 2));
         }
-        count
+
+        // Create new node
+        let n = all_children.len();
+        let size = 8 + k * 2 + n * 4;
+        let off = self.alloc(size);
+
+        self.set_u8(off, TYPE_INNER_SMALL);
+        self.set_u8(off + 1, k as u8);
+        self.set_u16(off + 2, 0);
+
+        let mut mask = 0u32;
+        for &(idx, _) in &all_children {
+            mask |= 1u32 << idx;
+        }
+        self.set_u32(off + 4, mask);
+
+        for (i, &db) in disc_bits.iter().enumerate() {
+            self.set_u16(off + 8 + (i as u32) * 2, db);
+        }
+
+        let new_children_off = off + 8 + (k as u32) * 2;
+        for (i, &(_, child)) in all_children.iter().enumerate() {
+            self.set_u32(new_children_off + (i as u32) * 4, child);
+        }
+
+        off
     }
-    
-    /// Get all children from sparse node as (index, ptr) pairs
-    fn sparse_children(&self, node: u32) -> Vec<(usize, u32)> {
-        let off = node as usize;
-        let span = self.arena[off + 1] as usize;
-        let bitmap_bytes = (1usize << span).div_ceil(8);
-        let bitmap_off = off + 4;
-        let children_off = off + 4 + bitmap_bytes;
-        
-        let mut result = Vec::new();
-        let mut child_idx = 0;
-        
-        for i in 0..(1 << span) {
-            let byte_idx = i / 8;
-            let bit_idx = i % 8;
-            if (self.arena[bitmap_off + byte_idx] >> bit_idx) & 1 != 0 {
-                let ptr = self.read_u32(children_off + child_idx * 4);
-                result.push((i, ptr));
-                child_idx += 1;
+
+    // Rebuild inner node with child updated
+    fn rebuild_inner_update_child(&mut self, old_node: u32, upd_idx: usize, new_child: u32) -> u32 {
+        let k = self.u8_at(old_node + 1) as usize;
+        let mask = self.u32_at(old_node + 4);
+        let count = mask.count_ones() as usize;
+
+        let disc_off = old_node + 8;
+        let children_off = old_node + 8 + (k as u32) * 2;
+
+        // Copy discriminator bits
+        let mut disc_bits: Vec<u16> = Vec::with_capacity(k);
+        for i in 0..k {
+            disc_bits.push(self.u16_at(disc_off + (i as u32) * 2));
+        }
+
+        // Copy children, replacing the one at upd_idx
+        let mut all_children: Vec<(usize, u32)> = Vec::with_capacity(count);
+        let mut dense_idx = 0;
+        for idx in 0..(1usize << k) {
+            if (mask >> idx) & 1 == 1 {
+                let child = if idx == upd_idx {
+                    new_child
+                } else {
+                    self.u32_at(children_off + (dense_idx as u32) * 4)
+                };
+                all_children.push((idx, child));
+                dense_idx += 1;
             }
         }
-        result
+
+        // Create new node
+        let n = all_children.len();
+        let size = 8 + k * 2 + n * 4;
+        let off = self.alloc(size);
+
+        self.set_u8(off, TYPE_INNER_SMALL);
+        self.set_u8(off + 1, k as u8);
+        self.set_u16(off + 2, 0);
+        self.set_u32(off + 4, mask);
+
+        for (i, &db) in disc_bits.iter().enumerate() {
+            self.set_u16(off + 8 + (i as u32) * 2, db);
+        }
+
+        let new_children_off = off + 8 + (k as u32) * 2;
+        for (i, &(_, child)) in all_children.iter().enumerate() {
+            self.set_u32(new_children_off + (i as u32) * 4, child);
+        }
+
+        off
     }
-    
+
     pub fn insert(&mut self, key: &[u8], value: u64) -> Option<u64> {
         if self.root == 0 {
             self.root = self.create_leaf(key, value);
             self.len = 1;
             return None;
         }
-        
-        let result = self.insert_rec(self.root, key, value, 0);
-        match result {
+
+        match self.insert_rec(self.root, key, value) {
             InsertResult::Updated(old) => Some(old),
-            InsertResult::Done => {
+            InsertResult::Inserted => {
                 self.len += 1;
                 None
             }
@@ -291,113 +393,109 @@ impl HOT {
             }
         }
     }
-    
-    fn insert_rec(&mut self, node: u32, key: &[u8], value: u64, depth_bits: usize) -> InsertResult {
-        let off = node as usize;
-        let node_type = self.arena[off];
-        
-        if node_type == NODE_LEAF {
+
+    fn insert_rec(&mut self, node: u32, key: &[u8], value: u64) -> InsertResult {
+        let node_type = self.u8_at(node);
+
+        if node_type == TYPE_LEAF {
             let existing_key = self.leaf_key(node).to_vec();
-            
-            if existing_key == key {
+
+            if existing_key.as_slice() == key {
                 let old = self.leaf_value(node);
                 self.set_leaf_value(node, value);
                 return InsertResult::Updated(old);
             }
-            
-            // Need to split: find first differing bit
+
+            // Split: create inner node at first differing bit
             if let Some(diff_bit) = Self::first_diff_bit(&existing_key, key) {
                 let new_leaf = self.create_leaf(key, value);
-                
-                // Create node at the differing bit with span 1
-                let bit_pos = diff_bit as u16;
-                let old_idx = Self::get_bit(&existing_key, diff_bit);
-                let new_idx = Self::get_bit(key, diff_bit);
-                
+
+                let old_idx = Self::bit_at(&existing_key, diff_bit) as usize;
+                let new_idx = Self::bit_at(key, diff_bit) as usize;
+
                 let children = if old_idx < new_idx {
                     vec![(old_idx, node), (new_idx, new_leaf)]
                 } else {
                     vec![(new_idx, new_leaf), (old_idx, node)]
                 };
-                
-                let new_node = self.create_sparse_node(bit_pos, 1, &children);
+
+                let new_node = self.create_inner_k1(diff_bit, &children);
                 return InsertResult::Replace(new_node);
-            } else {
-                // Keys are equal (shouldn't happen, already checked)
-                return InsertResult::Done;
             }
-        }
-        
-        // Internal node
-        let (span, bit_pos) = self.node_info(node);
-        let child_idx = Self::get_span_bits(key, bit_pos as usize, span as usize);
-        
-        if let Some(child) = self.sparse_lookup(node, child_idx) {
-            let result = self.insert_rec(child, key, value, bit_pos as usize + span as usize);
-            match result {
-                InsertResult::Replace(new_child) => {
-                    // Update child pointer - need to rebuild node
-                    let mut children = self.sparse_children(node);
-                    for (idx, ptr) in &mut children {
-                        if *idx == child_idx {
-                            *ptr = new_child;
-                            break;
-                        }
-                    }
-                    let new_node = self.create_sparse_node(bit_pos, span, &children);
-                    InsertResult::Replace(new_node)
-                }
-                other => other,
-            }
+
+            // Keys are equal - shouldn't happen
+            InsertResult::Inserted
         } else {
-            // No child at this index - add new leaf
-            let new_leaf = self.create_leaf(key, value);
-            let mut children = self.sparse_children(node);
-            children.push((child_idx, new_leaf));
-            children.sort_by_key(|(idx, _)| *idx);
-            let new_node = self.create_sparse_node(bit_pos, span, &children);
-            InsertResult::Replace(new_node)
+            // Inner node
+            let k = self.u8_at(node + 1) as usize;
+            let idx = self.extract_index(key, node, k);
+
+            if self.mask_has(node, idx) {
+                // Child exists, recurse
+                let dense_idx = self.popcount_before(node, idx);
+                let child = self.child_at(node, k, dense_idx);
+
+                match self.insert_rec(child, key, value) {
+                    InsertResult::Updated(old) => InsertResult::Updated(old),
+                    InsertResult::Inserted => InsertResult::Inserted,
+                    InsertResult::Replace(new_child) => {
+                        let new_node = self.rebuild_inner_update_child(node, idx, new_child);
+                        InsertResult::Replace(new_node)
+                    }
+                }
+            } else {
+                // No child at this index, add new leaf
+                let new_leaf = self.create_leaf(key, value);
+                let new_node = self.rebuild_inner_with_child(node, idx, new_leaf);
+                InsertResult::Replace(new_node)
+            }
         }
     }
-    
+
     pub fn get(&self, key: &[u8]) -> Option<u64> {
-        if self.root == 0 { return None; }
-        self.get_rec(self.root, key)
-    }
-    
-    fn get_rec(&self, node: u32, key: &[u8]) -> Option<u64> {
-        let off = node as usize;
-        let node_type = self.arena[off];
-        
-        if node_type == NODE_LEAF {
-            let leaf_key = self.leaf_key(node);
-            if leaf_key == key {
-                return Some(self.leaf_value(node));
-            }
+        if self.root == 0 {
             return None;
         }
-        
-        let (span, bit_pos) = self.node_info(node);
-        let child_idx = Self::get_span_bits(key, bit_pos as usize, span as usize);
-        
-        if let Some(child) = self.sparse_lookup(node, child_idx) {
-            self.get_rec(child, key)
+        self.get_rec(self.root, key)
+    }
+
+    fn get_rec(&self, node: u32, key: &[u8]) -> Option<u64> {
+        let node_type = self.u8_at(node);
+
+        if node_type == TYPE_LEAF {
+            let leaf_key = self.leaf_key(node);
+            if leaf_key == key {
+                Some(self.leaf_value(node))
+            } else {
+                None
+            }
         } else {
-            None
+            let k = self.u8_at(node + 1) as usize;
+            let idx = self.extract_index(key, node, k);
+
+            if self.mask_has(node, idx) {
+                let dense_idx = self.popcount_before(node, idx);
+                let child = self.child_at(node, k, dense_idx);
+                self.get_rec(child, key)
+            } else {
+                None
+            }
         }
     }
-    
+
     pub fn memory_usage(&self) -> usize {
         self.arena.capacity()
     }
 }
 
 impl Default for HOT {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 enum InsertResult {
-    Done,
+    Inserted,
     Updated(u64),
     Replace(u32),
 }
@@ -405,7 +503,7 @@ enum InsertResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_basic() {
         let mut t = HOT::new();
@@ -415,7 +513,7 @@ mod tests {
         assert_eq!(t.get(b"world"), Some(2));
         assert_eq!(t.get(b"missing"), None);
     }
-    
+
     #[test]
     fn test_update() {
         let mut t = HOT::new();
@@ -423,21 +521,21 @@ mod tests {
         assert_eq!(t.insert(b"key", 2), Some(1));
         assert_eq!(t.get(b"key"), Some(2));
     }
-    
+
     #[test]
     fn test_many() {
         let mut t = HOT::new();
-        for i in 0..10000 {
+        for i in 0..10000u64 {
             let key = format!("key{:05}", i);
             t.insert(key.as_bytes(), i);
         }
         assert_eq!(t.len(), 10000);
-        for i in 0..10000 {
+        for i in 0..10000u64 {
             let key = format!("key{:05}", i);
             assert_eq!(t.get(key.as_bytes()), Some(i), "Failed at {}", i);
         }
     }
-    
+
     #[test]
     fn test_prefixes() {
         let mut t = HOT::new();
@@ -449,5 +547,18 @@ mod tests {
         assert_eq!(t.get(b"ab"), Some(2));
         assert_eq!(t.get(b"abc"), Some(3));
         assert_eq!(t.get(b"abcd"), Some(4));
+    }
+
+    #[test]
+    fn test_random_order() {
+        let mut t = HOT::new();
+        let keys: Vec<String> = (0..1000).map(|i| format!("k{:04}", (i * 7919) % 1000)).collect();
+        for (i, key) in keys.iter().enumerate() {
+            t.insert(key.as_bytes(), i as u64);
+        }
+        // Last insert for each key wins
+        for (i, key) in keys.iter().enumerate() {
+            assert!(t.get(key.as_bytes()).is_some(), "Missing key {}", key);
+        }
     }
 }
