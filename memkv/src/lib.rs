@@ -380,4 +380,10 @@ mod stress_tests {
 }
 
 pub mod hot_final;
+pub mod hot_compact;
+pub use hot_compact::CompactHot;
 pub use hot_final::HOT;
+pub mod hot_compound;
+pub use hot_compound::CompoundHot;
+pub mod hot_inline;
+pub use hot_inline::InlineHot;

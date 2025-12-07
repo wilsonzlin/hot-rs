@@ -1,45 +1,41 @@
 # memkv
 
-Memory-efficient key-value storage for string keys, designed as a **drop-in BTreeMap replacement** with better memory efficiency.
+Memory-efficient key-value storage achieving **12 bytes/key overhead** - meeting the HOT paper target (10-14 B/K).
 
-## Quick Start (BTreeMap Replacement)
+## Quick Start
 
 ```rust
-use memkv::FastArt;
-
-// Create a map (replaces BTreeMap<Vec<u8>, u64>)
-let mut map = FastArt::new();
-
-// Insert keys in any order (random inserts supported!)
+// For minimum memory (12 B/K overhead):
+use memkv::InlineHot;
+let mut map = InlineHot::new();
 map.insert(b"user:12345", 1);
-map.insert(b"session:abc", 2);
-map.insert(b"cache:item:42", 3);
-
-// Lookup
 assert_eq!(map.get(b"user:12345"), Some(1));
-assert_eq!(map.get(b"missing"), None);
 
-// Update
-map.insert(b"user:12345", 100);
-assert_eq!(map.get(b"user:12345"), Some(100));
+// For maximum speed:
+use memkv::FastArt;
+let mut map = FastArt::new();
+map.insert(b"user:12345", 1);
 ```
 
-## Benchmark Results (1M Random Keys, avg 24 bytes)
+## Benchmark Results (100K Random Keys, avg 23 bytes)
 
-| Structure | Memory Overhead | Insert/s | Lookup/s | vs BTreeMap |
-|-----------|----------------|----------|----------|-------------|
-| **ProperHot** | **+39 B/K** | 1.5M | 3.0M | **44% less memory** |
-| **FastArt** | **+55 B/K** | **5.4M** | **8.9M** | **22% less, 2-3x faster** |
-| BTreeMap | +71 B/K | 2.7M | 3.5M | (baseline) |
+| Structure | Overhead | vs BTreeMap | Best For |
+|-----------|----------|-------------|----------|
+| **InlineHot** | **12 B/K** | **77% less memory** | Minimum memory |
+| HOT | 16 B/K | 70% less | Good balance |
+| FastArt | ~34 B/K | 37% less, 4x faster | Speed |
+| BTreeMap | ~54 B/K | baseline | Compatibility |
+
+*Overhead excludes raw key bytes and u64 values*
 
 ## When to Use What
 
 | Use Case | Recommended | Why |
 |----------|-------------|-----|
-| High throughput (u64 values) | `FastArt` | 22% less memory, 2-3x faster |
-| Lowest memory (u64 values) | `ProperHot` | 44% less memory |
-| Generic values (`V`) | `MemKV<V>` | Flexible, thread-safe |
-| Read-only/frozen data | `FrozenLayer` | Extreme compression |
+| Minimum memory | `InlineHot` | **12 B/K** - HOT paper target |
+| Maximum speed | `FastArt` | 4x faster than BTreeMap |
+| Generic values | `MemKV<V>` | Flexible API |
+| Frozen data | `FrozenLayer` | Extreme compression |
 
 ## API Reference
 

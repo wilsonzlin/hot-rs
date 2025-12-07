@@ -1,31 +1,46 @@
 # Memory-Efficient Key-Value Store for Billions of Keys
 
-## ✅ RESULTS ACHIEVED
+## ✅ RESULTS ACHIEVED - HOT Paper Target Met!
 
-### Drop-in BTreeMap Replacement (2M Random Keys, avg 24 bytes)
+### Memory Overhead Comparison (100K Random Keys, avg 23 bytes)
 
-| Structure | Memory Overhead | Insert/s | Lookup/s | vs BTreeMap |
-|-----------|----------------|----------|----------|-------------|
-| **ProperHot** | **38.9 B/K** | 1.3M | 2.6M | **45% less memory** |
-| **FastArt** | **56.0 B/K** | **7.0M** | **12.0M** | **20% less, 3-4x faster** |
-| BTreeMap | 70.3 B/K | 2.1M | 3.0M | baseline |
+| Structure | Overhead | Notes |
+|-----------|----------|-------|
+| **InlineHot** | **12.0 B/K** | ✅ **Within HOT paper target (10-14 B/K)** |
+| HOT | 16.0 B/K | Separate leaf array |
+| CompactHot | 18.0 B/K | 12-byte BiNodes |
+| FastArt | ~34 B/K | ART-based, fast |
+| BTreeMap | ~54 B/K | Standard library |
+
+*Overhead excludes raw key bytes and u64 values*
+
+### Performance (vs BTreeMap)
+
+| Structure | Memory | Speed | Best For |
+|-----------|--------|-------|----------|
+| **InlineHot** | **77% less** | 2x faster | Minimum memory |
+| **FastArt** | 37% less | **4x faster** | Maximum speed |
 
 ### Key Features
 
-- ✅ **Random insert order** - works with real database workloads
-- ✅ **O(key_length)** operations - constant for fixed-length keys
-- ✅ **Full map API** - get, insert, contains_key, update
-- ✅ **20-45% less memory** than BTreeMap
-- ✅ **2-4x faster** than BTreeMap
+- ✅ **12 bytes/key overhead** - achieves HOT paper target
+- ✅ **Random insert order** - real database workloads
+- ✅ **O(key_length)** operations
+- ✅ **Full map API** - get, insert, update
+- ✅ **77% less memory** than BTreeMap
 
 ### Recommended Usage
 
 ```rust
-use memkv::FastArt;
+// Minimum memory (12 B/K overhead):
+use memkv::InlineHot;
+let mut map = InlineHot::new();
+map.insert(b"user:12345", 1);
 
+// Maximum speed:
+use memkv::FastArt;
 let mut map = FastArt::new();
 map.insert(b"user:12345", 1);
-assert_eq!(map.get(b"user:12345"), Some(1));
 ```
 
 ---

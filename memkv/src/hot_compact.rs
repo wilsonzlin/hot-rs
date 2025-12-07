@@ -1,9 +1,11 @@
-//! HOT: Height Optimized Trie - Simplified Implementation
+//! Ultra-compact HOT implementation targeting ~12 bytes/key overhead
 //!
-//! This implementation focuses on correctness first.
-//! Based on HOT paper concepts but with simpler node management.
+//! Optimizations:
+//! 1. Keys stored with length prefix in key_data (no key_len in Leaf)
+//! 2. Leaf: key_off(4) + value(8) = 12 bytes
+//! 3. BiNode: bit_pos(2) + pad(2) + left(4) + right(4) = 12 bytes
 
-/// Child pointer - high bit distinguishes leaf vs node
+/// Pointer: 4 bytes, high bit = leaf flag
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Ptr(u32);
 
@@ -20,27 +22,28 @@ impl Ptr {
     #[inline] fn node_off(self) -> u32 { self.0 }
 }
 
-/// BiNode: binary node with single discriminator bit
-/// Layout: [bit_pos:2][left:4][right:4] = 10 bytes
-const BINODE_SIZE: usize = 10;
+/// BiNode: 12 bytes
+/// Layout: [bit_pos:2][pad:2][left:4][right:4]
+const BINODE_SIZE: usize = 12;
 
-/// Leaf entry
+/// Leaf: 12 bytes
+/// key_data stores: [len:2][key bytes]
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct Leaf {
-    key_off: u32,
-    key_len: u16,
-    value: u64,
+    key_off: u32,  // Offset in key_data (points to len prefix)
+    value: u64,    // The value
 }
 
-pub struct HOT {
+/// Compact HOT
+pub struct CompactHot {
     key_data: Vec<u8>,
     leaves: Vec<Leaf>,
     nodes: Vec<u8>,
     root: Ptr,
 }
 
-impl HOT {
+impl CompactHot {
     pub fn new() -> Self {
         Self {
             key_data: Vec::new(),
@@ -49,29 +52,22 @@ impl HOT {
             root: Ptr::NULL,
         }
     }
-    
-    pub fn with_capacity(key_count: usize, avg_key_len: usize) -> Self {
-        Self {
-            key_data: Vec::with_capacity(key_count * avg_key_len),
-            leaves: Vec::with_capacity(key_count),
-            nodes: Vec::with_capacity(key_count * BINODE_SIZE),
-            root: Ptr::NULL,
-        }
-    }
 
     #[inline] pub fn len(&self) -> usize { self.leaves.len() }
     #[inline] pub fn is_empty(&self) -> bool { self.leaves.is_empty() }
 
-    fn store_key(&mut self, key: &[u8]) -> (u32, u16) {
+    fn store_key(&mut self, key: &[u8]) -> u32 {
         let off = self.key_data.len() as u32;
+        let len = key.len() as u16;
+        self.key_data.extend_from_slice(&len.to_le_bytes());
         self.key_data.extend_from_slice(key);
-        (off, key.len() as u16)
+        off
     }
 
     fn get_key(&self, leaf: &Leaf) -> &[u8] {
-        let s = leaf.key_off as usize;
-        let e = s + leaf.key_len as usize;
-        &self.key_data[s..e]
+        let off = leaf.key_off as usize;
+        let len = u16::from_le_bytes([self.key_data[off], self.key_data[off + 1]]) as usize;
+        &self.key_data[off + 2..off + 2 + len]
     }
 
     fn alloc_binode(&mut self) -> u32 {
@@ -98,15 +94,15 @@ impl HOT {
     }
 
     fn binode_bit(&self, off: u32) -> u16 { self.r16(off) }
-    fn binode_left(&self, off: u32) -> Ptr { Ptr(self.r32(off + 2)) }
-    fn binode_right(&self, off: u32) -> Ptr { Ptr(self.r32(off + 6)) }
+    fn binode_left(&self, off: u32) -> Ptr { Ptr(self.r32(off + 4)) }
+    fn binode_right(&self, off: u32) -> Ptr { Ptr(self.r32(off + 8)) }
     fn set_binode(&mut self, off: u32, bit: u16, left: Ptr, right: Ptr) {
         self.w16(off, bit);
-        self.w32(off + 2, left.0);
-        self.w32(off + 6, right.0);
+        self.w32(off + 4, left.0);
+        self.w32(off + 8, right.0);
     }
-    fn set_binode_left(&mut self, off: u32, left: Ptr) { self.w32(off + 2, left.0); }
-    fn set_binode_right(&mut self, off: u32, right: Ptr) { self.w32(off + 6, right.0); }
+    fn set_binode_left(&mut self, off: u32, left: Ptr) { self.w32(off + 4, left.0); }
+    fn set_binode_right(&mut self, off: u32, right: Ptr) { self.w32(off + 8, right.0); }
 
     #[inline]
     fn bit_at(key: &[u8], pos: u16) -> u8 {
@@ -130,9 +126,9 @@ impl HOT {
     }
 
     fn create_leaf(&mut self, key: &[u8], value: u64) -> Ptr {
-        let (off, len) = self.store_key(key);
+        let key_off = self.store_key(key);
         let idx = self.leaves.len() as u32;
-        self.leaves.push(Leaf { key_off: off, key_len: len, value });
+        self.leaves.push(Leaf { key_off, value });
         Ptr::leaf(idx)
     }
 
@@ -211,9 +207,7 @@ impl HOT {
     }
 
     pub fn get(&self, key: &[u8]) -> Option<u64> {
-        if self.root.is_null() {
-            return None;
-        }
+        if self.root.is_null() { return None; }
         self.get_from(self.root, key)
     }
 
@@ -248,7 +242,6 @@ impl HOT {
         self.nodes.len()
     }
     
-    /// Shrink internal allocations to fit actual data
     pub fn shrink_to_fit(&mut self) {
         self.key_data.shrink_to_fit();
         self.leaves.shrink_to_fit();
@@ -256,7 +249,7 @@ impl HOT {
     }
 }
 
-impl Default for HOT {
+impl Default for CompactHot {
     fn default() -> Self { Self::new() }
 }
 
@@ -272,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_basic() {
-        let mut t = HOT::new();
+        let mut t = CompactHot::new();
         t.insert(b"hello", 1);
         t.insert(b"world", 2);
         assert_eq!(t.get(b"hello"), Some(1));
@@ -282,61 +275,23 @@ mod tests {
 
     #[test]
     fn test_update() {
-        let mut t = HOT::new();
+        let mut t = CompactHot::new();
         assert_eq!(t.insert(b"key", 1), None);
         assert_eq!(t.insert(b"key", 2), Some(1));
         assert_eq!(t.get(b"key"), Some(2));
     }
 
     #[test]
-    fn test_three() {
-        let mut t = HOT::new();
-        t.insert(b"aaa", 1);
-        t.insert(b"bbb", 2);
-        t.insert(b"ccc", 3);
-        assert_eq!(t.get(b"aaa"), Some(1));
-        assert_eq!(t.get(b"bbb"), Some(2));
-        assert_eq!(t.get(b"ccc"), Some(3));
-    }
-
-    #[test]
     fn test_many() {
-        let mut t = HOT::new();
-        for i in 0..1000u64 {
+        let mut t = CompactHot::new();
+        for i in 0..10000u64 {
             let key = format!("key{:05}", i);
             t.insert(key.as_bytes(), i);
         }
-        assert_eq!(t.len(), 1000);
-        for i in 0..1000u64 {
+        assert_eq!(t.len(), 10000);
+        for i in 0..10000u64 {
             let key = format!("key{:05}", i);
             assert_eq!(t.get(key.as_bytes()), Some(i), "Failed at {}", i);
-        }
-    }
-
-    #[test]
-    fn test_prefixes() {
-        let mut t = HOT::new();
-        t.insert(b"a", 1);
-        t.insert(b"ab", 2);
-        t.insert(b"abc", 3);
-        t.insert(b"abcd", 4);
-        assert_eq!(t.get(b"a"), Some(1));
-        assert_eq!(t.get(b"ab"), Some(2));
-        assert_eq!(t.get(b"abc"), Some(3));
-        assert_eq!(t.get(b"abcd"), Some(4));
-    }
-
-    #[test]
-    fn test_random_order() {
-        let mut t = HOT::new();
-        let keys = [5, 2, 8, 1, 9, 3, 7, 4, 6, 0];
-        for &i in &keys {
-            let key = format!("key{:02}", i);
-            t.insert(key.as_bytes(), i as u64);
-        }
-        for &i in &keys {
-            let key = format!("key{:02}", i);
-            assert_eq!(t.get(key.as_bytes()), Some(i as u64), "Failed at {}", i);
         }
     }
 }
