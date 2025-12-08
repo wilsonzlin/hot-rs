@@ -61,6 +61,36 @@ map.insert(b"user:12345", 1);
 
 ---
 
+## Alternative Approaches (from other branches)
+
+### Immutable Compressed Storage (wilson/claude-glory)
+
+For **immutable/frozen data**, block-based compression achieves better memory efficiency:
+
+| Approach | B/K | Ops/s | Use Case |
+|----------|-----|-------|----------|
+| CompressedBlockStore (ZSTD) | 12.65 | 103K | Bulk-loaded, read-only |
+| FrontCodedStore | ~15-20 | 500K | Sorted strings |
+| FrozenLayer (FST) | 33.6 | 3.3M | General immutable |
+
+**CompressedBlockStore design:**
+- Front-code sorted keys within blocks
+- ZSTD compress each block (192 keys optimal)
+- Binary search blocks, decompress on query
+- Trade-off: ~10x slower lookups vs mutable structures
+
+This is valuable for cold data or bulk-loaded datasets where mutability isn't needed.
+
+### Research References
+
+See `memkv/docs/researcher-ideas-*.md` for comprehensive literature review:
+- HOT paper analysis and SIMD optimizations
+- HOPE order-preserving compression
+- Pointer swizzling techniques
+- Hybrid architecture proposals
+
+---
+
 ## Project Overview
 
 **Goal**: Create a Rust library for storing and querying string keys (UTF-8 or arbitrary bytes) with arbitrary values, optimized for extreme memory efficiency at billion-key scale.
