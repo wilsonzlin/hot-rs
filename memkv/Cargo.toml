@@ -14,6 +14,8 @@ smallvec = "1.11"     # Inline prefix storage
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+clap = { version = "4", features = ["derive"] }
+rayon = "1.10"
 rand = "0.8"
 tikv-jemallocator = "0.5"
 tikv-jemalloc-ctl = "0.5"
