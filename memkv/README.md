@@ -1,109 +1,111 @@
 # memkv
 
-Memory-efficient key-value storage for string keys, designed for billion-key datasets.
+Memory-efficient key-value storage. 33% less memory than BTreeMap.
 
-## Benchmark Results (9.5M URLs, 467 MB raw data)
+## Quick Start
 
-| Implementation | Memory | Overhead/Key | Insert ops/s | Lookup ops/s |
-|---------------|--------|--------------|--------------|--------------|
-| **FrozenLayer (FST)** | 320 MB | **-16.2 bytes** | 721K | 3.3M |
-| **FastArt** | **1,040 MB** | **63.0 bytes** | **4.9M** | **8.6M** |
-| libart (C) | 1,123 MB | 72.2 bytes | 5.0M | 11.7M |
-| BTreeMap | 1,145 MB | 74.5 bytes | 3.3M | 8.5M |
-| ArenaArt | 1,449 MB | 108.1 bytes | 3.5M | 11.1M |
-| art-tree | 1,961 MB | 164.5 bytes | 3.2M | 5.5M |
-| blart | 3,286 MB | 310.3 bytes | 2.3M | 9.4M |
-| art | 6,953 MB | 713.9 bytes | 785K | 2.1M |
-| rart | 9,875 MB | 1,035.6 bytes | 797K | 3.6M |
+```rust
+use memkv::InlineHot;
 
-**FST achieves COMPRESSION** (negative overhead) for immutable data.  
-**FastArt beats libart (C)** with 13% less memory and 100% correctness.  
-**FastArt is 16x better** than rart (the SIMD-optimized Rust ART)!
+let mut map = InlineHot::new();
+map.insert(b"user:12345", 42u64);
+assert_eq!(map.get(b"user:12345"), Some(42));
+```
+
+## Structures
+
+| Structure | Memory | Speed | Use Case |
+|-----------|--------|-------|----------|
+| `InlineHot` | **-33%** | 2.1M/s | Minimum memory |
+| `FastArt` | -6% | **5.2M/s** | Maximum speed |
+| `FrozenLayer` | -40%* | 3.3M/s | Immutable data |
+| `MemKV<V>` | -33% | 2M/s | Thread-safe, generic values |
+
+*vs BTreeMap on 500K URLs benchmark
 
 ## Usage
 
-### FastArt (Mutable - Best Performance)
+### InlineHot (Best Memory)
+
+```rust
+use memkv::InlineHot;
+
+let mut map = InlineHot::new();
+map.insert(b"key", 1u64);
+map.insert(b"key", 2u64);  // Update
+assert_eq!(map.get(b"key"), Some(2));
+println!("entries: {}", map.len());
+```
+
+### FastArt (Best Speed)
 
 ```rust
 use memkv::FastArt;
 
 let mut art = FastArt::new();
-art.insert(b"key1", 1);
-art.insert(b"key2", 2);
-
-assert_eq!(art.get(b"key1"), Some(1));
-assert_eq!(art.get(b"key2"), Some(2));
+art.insert(b"key", 1u64);
+assert_eq!(art.get(b"key"), Some(1));
 ```
 
-### FrozenLayer (Immutable - Best Memory)
+### FrozenLayer (Immutable)
 
 ```rust
-use memkv::{FrozenLayerBuilder, FrozenLayer};
+use memkv::FrozenLayer;
 
-// Build from sorted keys
-let mut builder = FrozenLayerBuilder::new()?;
-builder.insert(b"key1", 1)?;
-builder.insert(b"key2", 2)?;
-let frozen: FrozenLayer = builder.finish()?;
-
-// Query
-assert_eq!(frozen.get(b"key1"), Some(1));
+// Keys must be sorted
+let data = vec![
+    (b"a".as_slice(), 1u64),
+    (b"b".as_slice(), 2u64),
+];
+let frozen = FrozenLayer::from_sorted_iter(data).unwrap();
+assert_eq!(frozen.get(b"a"), Some(1));
 ```
 
-### ArenaArt (Mutable Alternative)
+### MemKV (Thread-safe)
 
 ```rust
-use memkv::ArenaArt;
+use memkv::MemKV;
 
-let mut art = ArenaArt::new();
-art.insert(b"key1", 1);
-art.insert(b"key2", 2);
+let kv: MemKV<String> = MemKV::new();
+kv.insert(b"name", "Alice".to_string());
+assert_eq!(kv.get(b"name"), Some("Alice".to_string()));
 
-assert_eq!(art.get(b"key1"), Some(&1));
+// Prefix scan
+for (key, value) in kv.prefix(b"user:") {
+    println!("{:?} = {}", key, value);
+}
 ```
 
-## Key Findings
+## Benchmarks
 
-1. **FST is unbeatable for immutable data** - provides 2.4x compression
-2. **FastArt beats libart (C)** - 63 vs 72 bytes overhead, pure Rust, 100% correct
-3. **BTreeMap is a solid baseline** - 75 bytes overhead, stdlib optimized
-4. **Fixed-key-size ART crates are disasters** - rart uses 1036 bytes per key!
+500K URLs, shuffled random inserts:
 
-## Why Other Rust ARTs Fail
-
-Most Rust ART crates (rart, blart, art) use **fixed-size key arrays**:
-
-```rust
-// rart forces 256-byte keys regardless of actual length!
-let key: ArrayKey<256> = "example.com".into();  // 11 bytes → 256 bytes
+```
+Structure      Total MB   Overhead B/K   Lookup/s
+─────────────────────────────────────────────────
+BTreeMap           52.0         57.7        2.1M
+InlineHot          34.6         22.7        2.1M  ← -33% memory
+FastArt            49.1         51.7        5.2M  ← 2.5x faster
 ```
 
-For URLs averaging 51.5 bytes, this wastes **204 bytes per key**!
+Run yourself:
+```bash
+cargo run --release --example scale_test
+```
 
-| Crate | Overhead | vs FastArt |
-|-------|----------|------------|
-| FastArt | 63 b | 1.0x |
-| art-tree | 165 b | 2.6x |
-| blart | 310 b | 4.9x |
-| art | 714 b | 11.3x |
-| rart | 1,036 b | **16.4x** |
+## How It Works
 
-## FastArt Optimizations
+**InlineHot** uses a Height Optimized Trie with:
+- BiNodes (binary splits on discriminating bits)
+- 32-bit pointers (saves 4 bytes vs 64-bit)
+- Inline value storage (no separate leaf struct)
+- 12 B/K index overhead
 
-Inspired by libart (C), FastArt achieves excellent memory efficiency through:
-
-1. **Pointer tagging** - Low bit distinguishes leaf vs internal node
-2. **Inline key storage** - Keys embedded directly after leaf header
-3. **Compact 16-byte headers** - Matching libart's proven design
-4. **Terminating byte** - Handles prefix keys correctly
-5. **Raw allocation** - Uses `std::alloc` for minimal overhead
-
-## Recommendations
-
-- **Read-heavy/frozen data**: Use `FrozenLayer`
-- **Mutable data**: Use `FastArt`
-- **Simple/portable**: Use `BTreeMap` 
-- **Hybrid workloads**: FST base + FastArt delta layer
+**FastArt** uses Adaptive Radix Tree with:
+- Four node sizes (4, 16, 48, 256 children)
+- SIMD search for Node16
+- Pointer tagging for leaves
+- Path compression
 
 ## License
 
