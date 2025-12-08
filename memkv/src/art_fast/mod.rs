@@ -297,7 +297,7 @@ impl Node16 {
     
     /// Scalar fallback for finding child
     #[inline]
-    fn find_child_scalar(&self, byte: u8) -> Option<TaggedPtr> {
+    #[allow(dead_code)] fn find_child_scalar(&self, byte: u8) -> Option<TaggedPtr> {
         let n = self.header.num_children as usize;
         for i in 0..n {
             if self.keys[i] == byte {
@@ -351,7 +351,7 @@ impl Node16 {
     
     /// Scalar fallback for finding child index
     #[inline]
-    fn find_child_idx_scalar(&self, byte: u8) -> Option<usize> {
+    #[allow(dead_code)] fn find_child_idx_scalar(&self, byte: u8) -> Option<usize> {
         let n = self.header.num_children as usize;
         for i in 0..n {
             if self.keys[i] == byte {

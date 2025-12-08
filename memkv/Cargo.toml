@@ -2,83 +2,28 @@
 name = "memkv"
 version = "0.1.0"
 edition = "2021"
-authors = ["Memory-Efficient KV Store"]
-description = "A memory-efficient key-value store for billions of string keys"
+description = "Memory-efficient key-value store for string keys"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/memkv/memkv"
-keywords = ["database", "key-value", "memory-efficient", "trie", "index"]
+keywords = ["database", "key-value", "memory-efficient", "trie"]
 categories = ["data-structures", "database-implementations"]
 
-[features]
-default = []
-nightly = []  # For nightly-only optimizations
-
 [dependencies]
-# For FST (Finite State Transducer) - frozen layer
-fst = "0.4"
-
-# For concurrent access
-parking_lot = "0.12"
-
-# For memory statistics
-memmap2 = "0.9"
-
-# Small vector optimization for prefixes
-smallvec = "1.11"
-
-# For benchmarking helpers
-rand = { version = "0.8", optional = true }
-
-# For memory measurement
-libc = "0.2"
-
-[build-dependencies]
-cc = "1.0"
+fst = "0.4"           # FST for FrozenLayer
+parking_lot = "0.12"  # Fast RwLock for MemKV
+smallvec = "1.11"     # Inline prefix storage
 
 [dev-dependencies]
-# Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
-
-# Testing utilities
 rand = "0.8"
-tempfile = "3"
-
-# Memory profiling
-memory-stats = "1.0"
-
-# Accurate memory allocation tracking
 tikv-jemallocator = "0.5"
 tikv-jemalloc-ctl = "0.5"
-
-# Existing Rust ART implementations for comparison
-art-tree = "0.2"
-blart = "0.4"
-# rart = "0.2"  # Requires edition 2024, not available yet
-# art = "1.0"   # Requires edition 2024, not available yet
-
-[[bench]]
-name = "baseline"
-harness = false
-
-[[bench]]
-name = "art_ops"
-harness = false
-
-[[bench]]
-name = "memory"
-harness = false
 
 [[example]]
 name = "basic_usage"
 
 [[example]]
-name = "url_dataset"
+name = "scale_test"
 
 [profile.release]
-lto = true
-codegen-units = 1
-panic = "abort"
-
-[profile.bench]
 lto = true
 codegen-units = 1

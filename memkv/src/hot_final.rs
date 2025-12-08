@@ -15,7 +15,7 @@ impl Ptr {
     #[inline] fn node(off: u32) -> Self { Self(off) }
     #[inline] fn is_null(self) -> bool { self.0 == u32::MAX }
     #[inline] fn is_leaf(self) -> bool { !self.is_null() && (self.0 & Self::LEAF_BIT != 0) }
-    #[inline] fn is_node(self) -> bool { !self.is_null() && (self.0 & Self::LEAF_BIT == 0) }
+    #[inline] #[allow(dead_code)] fn is_node(self) -> bool { !self.is_null() && (self.0 & Self::LEAF_BIT == 0) }
     #[inline] fn leaf_idx(self) -> u32 { self.0 & !Self::LEAF_BIT }
     #[inline] fn node_off(self) -> u32 { self.0 }
 }

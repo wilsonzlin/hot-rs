@@ -1,54 +1,74 @@
-//! Basic usage example for MemKV.
+//! Basic usage examples for memkv structures.
 
-use memkv::MemKV;
+use memkv::{InlineHot, FastArt, MemKV};
 
 fn main() {
-    // Create a new store
-    let kv: MemKV<u64> = MemKV::new();
+    println!("=== InlineHot (Best Memory Efficiency) ===\n");
+    demo_inline_hot();
+    
+    println!("\n=== FastArt (Best Speed) ===\n");
+    demo_fast_art();
+    
+    println!("\n=== MemKV (Thread-safe, Generic Values) ===\n");
+    demo_memkv();
+}
 
-    // Insert some data
-    println!("Inserting data...");
-    kv.insert(b"user:1001", 1001);
-    kv.insert(b"user:1002", 1002);
-    kv.insert(b"user:1003", 1003);
-    kv.insert(b"post:100", 100);
-    kv.insert(b"post:101", 101);
+fn demo_inline_hot() {
+    let mut map = InlineHot::new();
+    
+    // Insert
+    map.insert(b"user:1001", 1001);
+    map.insert(b"user:1002", 1002);
+    map.insert(b"post:100", 100);
+    
+    // Lookup
+    println!("user:1001 = {:?}", map.get(b"user:1001"));
+    println!("missing   = {:?}", map.get(b"missing"));
+    
+    // Update
+    map.insert(b"user:1001", 9999);
+    println!("updated   = {:?}", map.get(b"user:1001"));
+    
+    // Memory stats
+    println!("count     = {}", map.len());
+    println!("memory    = {} bytes", map.memory_usage_actual());
+}
 
-    // Point lookups
-    println!("\nPoint lookups:");
-    println!("  user:1001 = {:?}", kv.get(b"user:1001"));
-    println!("  user:9999 = {:?}", kv.get(b"user:9999"));
+fn demo_fast_art() {
+    let mut art = FastArt::new();
+    
+    // Insert
+    art.insert(b"user:1001", 1001);
+    art.insert(b"user:1002", 1002);
+    art.insert(b"post:100", 100);
+    
+    // Lookup
+    println!("user:1001 = {:?}", art.get(b"user:1001"));
+    println!("missing   = {:?}", art.get(b"missing"));
+    
+    // Update
+    art.insert(b"user:1001", 9999);
+    println!("updated   = {:?}", art.get(b"user:1001"));
+    
+    println!("count     = {}", art.len());
+}
 
+fn demo_memkv() {
+    // Thread-safe, works with any Clone type
+    let kv: MemKV<String> = MemKV::new();
+    
+    kv.insert(b"name", "Alice".to_string());
+    kv.insert(b"city", "Boston".to_string());
+    
+    println!("name = {:?}", kv.get(b"name"));
+    println!("city = {:?}", kv.get(b"city"));
+    
     // Prefix scan
-    println!("\nPrefix scan for 'user:':");
+    kv.insert(b"user:1", "User1".to_string());
+    kv.insert(b"user:2", "User2".to_string());
+    
+    println!("\nPrefix 'user:':");
     for (key, value) in kv.prefix(b"user:") {
         println!("  {} = {}", String::from_utf8_lossy(&key), value);
     }
-
-    // Range query
-    println!("\nRange query [post:100, post:102):");
-    for (key, value) in kv.range(b"post:100", b"post:102") {
-        println!("  {} = {}", String::from_utf8_lossy(&key), value);
-    }
-
-    // Memory stats
-    let stats = kv.memory_usage();
-    println!("\nMemory statistics:");
-    println!("  Keys: {}", stats.num_keys);
-    println!("  Key bytes: {}", stats.key_bytes);
-    println!("  Node bytes: {}", stats.node_bytes);
-    println!("  Bytes per key: {:.2}", stats.bytes_per_key);
-
-    // Update and remove
-    println!("\nUpdating user:1001...");
-    let old = kv.insert(b"user:1001", 9999);
-    println!("  Old value: {:?}", old);
-    println!("  New value: {:?}", kv.get(b"user:1001"));
-
-    println!("\nRemoving user:1002...");
-    let removed = kv.remove(b"user:1002");
-    println!("  Removed: {:?}", removed);
-    println!("  Still exists: {}", kv.contains(b"user:1002"));
-
-    println!("\nFinal count: {} keys", kv.len());
 }

@@ -764,7 +764,7 @@ impl<V: Clone> RangeIterator<V> {
                 }
             }
 
-            Node::Node48 { child_index, children, leaf_value, num_children, .. } => {
+            Node::Node48 { child_index, children, leaf_value,  .. } => {
                 if let Some((key, leaf)) = leaf_value {
                     if let Node::Leaf { value, .. } = &**leaf {
                         if Self::in_range(key, start, end) {

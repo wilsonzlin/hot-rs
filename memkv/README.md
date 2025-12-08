@@ -1,122 +1,111 @@
 # memkv
 
-Memory-efficient key-value storage with **33% less memory than BTreeMap**.
+Memory-efficient key-value storage. 33% less memory than BTreeMap.
 
 ## Quick Start
 
 ```rust
-// For minimum memory (-33% vs BTreeMap):
 use memkv::InlineHot;
-let mut map = InlineHot::new();
-map.insert(b"user:12345", 1);
-assert_eq!(map.get(b"user:12345"), Some(1));
 
-// For maximum speed (2x faster lookups):
-use memkv::FastArt;
-let mut map = FastArt::new();
-map.insert(b"user:12345", 1);
+let mut map = InlineHot::new();
+map.insert(b"user:12345", 42u64);
+assert_eq!(map.get(b"user:12345"), Some(42));
 ```
 
-## Benchmark Results (500K URLs, shuffled random insert)
+## Structures
 
-| Structure | Total Memory | vs BTreeMap | Lookup/s |
-|-----------|-------------|-------------|----------|
-| BTreeMap | 52.0 MB | baseline | 2.1M |
-| **InlineHot** | **34.6 MB** | **-33%** | 2.1M |
-| HOT | 37.7 MB | -28% | 2.5M |
-| FastArt | 49.1 MB | -6% | **5.2M** |
+| Structure | Memory | Speed | Use Case |
+|-----------|--------|-------|----------|
+| `InlineHot` | **-33%** | 2.1M/s | Minimum memory |
+| `FastArt` | -6% | **5.2M/s** | Maximum speed |
+| `FrozenLayer` | -40%* | 3.3M/s | Immutable data |
+| `MemKV<V>` | -33% | 2M/s | Thread-safe, generic values |
 
-### Index Overhead (excluding raw keys)
+*vs BTreeMap on 500K URLs benchmark
 
-| Structure | Overhead | Index Only |
-|-----------|----------|------------|
-| BTreeMap | 57.7 B/K | 49.7 B/K |
-| **InlineHot** | **22.7 B/K** | **12.0 B/K** |
-| HOT | 29.1 B/K | 16.0 B/K |
+## Usage
 
-*Index = Overhead - 8 (value size)*
+### InlineHot (Best Memory)
 
-## When to Use What
+```rust
+use memkv::InlineHot;
 
-| Use Case | Recommended | Why |
-|----------|-------------|-----|
-| Minimum memory | `InlineHot` | **12 B/K** - HOT paper target |
-| Maximum speed | `FastArt` | 4x faster than BTreeMap |
-| Generic values | `MemKV<V>` | Flexible API |
-| Frozen data | `FrozenLayer` | Extreme compression |
+let mut map = InlineHot::new();
+map.insert(b"key", 1u64);
+map.insert(b"key", 2u64);  // Update
+assert_eq!(map.get(b"key"), Some(2));
+println!("entries: {}", map.len());
+```
 
-## API Reference
-
-### FastArt (Recommended for u64 values)
+### FastArt (Best Speed)
 
 ```rust
 use memkv::FastArt;
 
 let mut art = FastArt::new();
-art.insert(b"key", 42);           // Insert
-let v = art.get(b"key");          // Lookup: Some(42)
-let old = art.insert(b"key", 99); // Update: returns Some(42)
-let exists = art.get(b"key").is_some(); // Check existence
-let count = art.len();            // Number of keys
+art.insert(b"key", 1u64);
+assert_eq!(art.get(b"key"), Some(1));
 ```
 
-### ProperHot (Best Memory Efficiency)
-
-```rust
-use memkv::ProperHot;
-
-let mut hot = ProperHot::new();
-hot.insert(b"key", 42);
-assert_eq!(hot.get(b"key"), Some(42));
-```
-
-### FrozenLayer (Immutable, Compressed)
+### FrozenLayer (Immutable)
 
 ```rust
 use memkv::FrozenLayer;
 
-// Must insert in sorted order
+// Keys must be sorted
 let data = vec![
-    (b"apple".as_slice(), 1u64),
-    (b"banana".as_slice(), 2u64),
-    (b"cherry".as_slice(), 3u64),
+    (b"a".as_slice(), 1u64),
+    (b"b".as_slice(), 2u64),
 ];
-
 let frozen = FrozenLayer::from_sorted_iter(data).unwrap();
-assert_eq!(frozen.get(b"apple"), Some(1));
+assert_eq!(frozen.get(b"a"), Some(1));
 ```
 
-### MemKV<V> (Generic, Thread-Safe)
+### MemKV (Thread-safe)
 
 ```rust
 use memkv::MemKV;
 
-let map: MemKV<String> = MemKV::new();
-map.insert(b"key", "value".to_string());
-assert_eq!(map.get(b"key"), Some("value".to_string()));
+let kv: MemKV<String> = MemKV::new();
+kv.insert(b"name", "Alice".to_string());
+assert_eq!(kv.get(b"name"), Some("Alice".to_string()));
+
+// Prefix scan
+for (key, value) in kv.prefix(b"user:") {
+    println!("{:?} = {}", key, value);
+}
 ```
 
-## Implementation Details
+## Benchmarks
 
-FastArt is an Adaptive Radix Tree (ART) with:
+500K URLs, shuffled random inserts:
 
-- **O(key_length)** operations (vs O(log n) for BTreeMap)
-- **SIMD-optimized** Node16 child lookup (SSE2)
-- **Pointer tagging** to distinguish leaves from internal nodes
-- **Path compression** to reduce tree height
-- **Compact node layouts** matching libart (C) design
+```
+Structure      Total MB   Overhead B/K   Lookup/s
+─────────────────────────────────────────────────
+BTreeMap           52.0         57.7        2.1M
+InlineHot          34.6         22.7        2.1M  ← -33% memory
+FastArt            49.1         51.7        5.2M  ← 2.5x faster
+```
 
-## Large Scale Benchmarks (9.5M URLs)
+Run yourself:
+```bash
+cargo run --release --example scale_test
+```
 
-| Implementation | Memory | Overhead/Key | Insert ops/s |
-|---------------|--------|--------------|--------------|
-| **FrozenLayer (FST)** | 320 MB | **-16 bytes** | 721K |
-| **FastArt** | 1,040 MB | 63 bytes | 4.9M |
-| libart (C) | 1,123 MB | 72 bytes | 5.0M |
-| BTreeMap | 1,145 MB | 75 bytes | 3.3M |
+## How It Works
 
-- **FrozenLayer** achieves compression (negative overhead) for immutable data
-- **FastArt** beats libart (C) with 13% less memory
+**InlineHot** uses a Height Optimized Trie with:
+- BiNodes (binary splits on discriminating bits)
+- 32-bit pointers (saves 4 bytes vs 64-bit)
+- Inline value storage (no separate leaf struct)
+- 12 B/K index overhead
+
+**FastArt** uses Adaptive Radix Tree with:
+- Four node sizes (4, 16, 48, 256 children)
+- SIMD search for Node16
+- Pointer tagging for leaves
+- Path compression
 
 ## License
 
