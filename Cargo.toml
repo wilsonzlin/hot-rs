@@ -1,0 +1,18 @@
+[package]
+name = "hot-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Memory-efficient ordered map using Height Optimized Trie"
+license = "MIT OR Apache-2.0"
+keywords = ["data-structures", "trie", "memory-efficient", "ordered-map"]
+categories = ["data-structures"]
+
+[dependencies]
+# None required for core functionality
+
+[dev-dependencies]
+rand = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1

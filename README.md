@@ -1,155 +1,87 @@
-# MemKV - Memory-Efficient Key-Value Store
+# hot-rs
 
-A Rust library designed for storing billions of string keys with extreme memory efficiency.
+A memory-efficient ordered map for Rust using a Height Optimized Trie (HOT).
 
-## Key Results (9.5M URL Dataset, 467 MB raw keys)
+`HotTree` provides similar functionality to `BTreeMap<Vec<u8>, V>` but uses **~33% less memory** for typical workloads with byte-string keys.
 
-| Implementation | Total Memory | Overhead/Key | Notes |
-|---------------|--------------|--------------|-------|
-| **FrozenLayer (FST)** | **320 MB** | **-16 bytes** | **2.4x compression!** |
-| BTreeMap | 1145 MB | 75 bytes | Best for mutable data |
-| ArenaArt | 1449 MB | 108 bytes | Better than art-tree |
-| art-tree (crate) | 1961 MB | 164 bytes | Existing Rust ART |
-
-**FrozenLayer achieves 2.4x compression** - stores 467 MB of keys in only 194 MB!
-
-## Features
-
-- **FrozenLayer (FST)**: Extreme compression for read-only data using Finite State Transducers
-- **ArenaArt**: Mutable ART with arena-based node storage
-- **Concurrent Access**: Thread-safe with RwLock wrapper
-- **Rich Query API**: Single key lookup, range queries, prefix scans
-- **Accurate Measurement**: jemalloc integration for precise memory tracking
-
-## Quick Start
-
-### For Read-Only/Frozen Data (Best Memory Efficiency)
+## Usage
 
 ```rust
-use memkv::FrozenLayer;
+use hot_rs::HotTree;
 
-// Keys must be sorted for FST construction
-let mut data: Vec<(&[u8], u64)> = vec![
-    (b"apple", 1),
-    (b"banana", 2),
-    (b"cherry", 3),
-];
-data.sort_by_key(|(k, _)| *k);
+let mut tree: HotTree<u64> = HotTree::new();
 
-let frozen = FrozenLayer::from_sorted_iter(data).unwrap();
+// Insert
+tree.insert(b"apple", 1);
+tree.insert(b"banana", 2);
 
-// Lookups
-assert_eq!(frozen.get(b"apple"), Some(1));
+// Get
+assert_eq!(tree.get(b"apple"), Some(&1));
 
-// Prefix scans
-let results = frozen.prefix_scan(b"a");
+// Update (returns old value)
+assert_eq!(tree.insert(b"apple", 10), Some(1));
 
-// Range queries
-let results = frozen.range(b"a", b"c");
+// Remove
+assert_eq!(tree.remove(b"banana"), Some(2));
+
+// Iterate
+for (key, value) in tree.iter() {
+    println!("{:?} => {}", key, value);
+}
 ```
 
-### For Mutable Data
+## Memory Efficiency
 
-```rust
-use memkv::ArenaArt;
+Benchmark with 500K URL keys (shuffled random inserts):
 
-let mut kv: ArenaArt<u64> = ArenaArt::new();
+| Structure | Memory | Overhead/Key |
+|-----------|--------|--------------|
+| `BTreeMap<Vec<u8>, u64>` | 52 MB | 57.7 bytes |
+| `HotTree<u64>` | 35 MB | 22.7 bytes |
 
-kv.insert(b"user:1001", 42);
-kv.insert(b"user:1002", 43);
-
-assert_eq!(kv.get(b"user:1001"), Some(&42));
-```
-
-### Thread-Safe Wrapper
-
-```rust
-use memkv::MemKV;
-
-let kv: MemKV<u64> = MemKV::new();
-kv.insert(b"key", 42);
-assert_eq!(kv.get(b"key"), Some(42));
-```
-
-## Architecture
-
-### FrozenLayer (Recommended for read-only data)
-
-Uses **Finite State Transducers (FST)** for extreme compression:
-- ~25 bytes/key for URL dataset (2x compression vs raw)
-- O(key length) lookups
-- Efficient range queries and prefix scans
-- Must provide sorted input during construction
-
-### ArenaArt (For mutable data)
-
-**Adaptive Radix Tree** with arena-based node storage:
-- Nodes stored in contiguous Vec (no per-node allocation overhead)
-- Keys and prefixes in data arena with 6-byte references
-- Adaptive node sizing: Node4 → Node16 → Node48 → Node256
-
-### Other Implementations
-
-- **UltraCompactArt**: Box-based nodes with arena-backed strings
-- **CompactArt**: Arena-backed keys only
-- **AdaptiveRadixTree**: Traditional ART implementation
-- **SimpleKV**: BTreeMap-based fallback
-
-## When to Use What
-
-| Use Case | Recommendation | Memory |
-|----------|----------------|--------|
-| Read-only data | FrozenLayer | ~44 bytes/key |
-| Mutable + range queries | BTreeMap or ArenaArt | ~125-195 bytes/key |
-| Very long keys + prefixes | ArenaArt | Good prefix compression |
-| Hybrid workloads | FST base + mutable delta | Best of both |
-
-## Memory Optimization Techniques
-
-1. **FST Compression**: Finite State Transducers for immutable data
-2. **Arena Allocation**: Nodes in contiguous Vec, strings in data arena
-3. **Packed References**: 6-byte `DataRef` vs 24-byte `Vec<u8>`
-4. **Boxing Large Arrays**: Reduces enum size to 56 bytes
-5. **jemalloc**: Accurate allocation tracking via tikv-jemalloc-ctl
-
-## Project Structure
-
-```
-memkv/
-├── src/
-│   ├── lib.rs           # Public API
-│   ├── frozen/          # FST-based frozen layer (best!)
-│   ├── art_arena/       # Arena-based ART
-│   ├── art_compact2/    # Box-based ART with arena strings
-│   ├── arena/           # Arena allocator
-│   └── simple.rs        # BTreeMap fallback
-├── examples/
-│   ├── compare_all.rs   # Complete memory comparison
-│   └── url_dataset.rs   # URL dataset benchmark
-└── benches/             # Criterion benchmarks
-```
-
-## Benchmarking
+Run the benchmark yourself:
 
 ```bash
-# Run complete memory comparison
-cargo run --release --example compare_all
-
-# Run with jemalloc for accurate measurements
-cargo run --release --example compare_all
+cargo run --release --example benchmark
 ```
 
-## Documentation
+## API
 
-- [DESIGN.md](DESIGN.md) - Detailed design document with research
-- [SCRATCHPAD.md](SCRATCHPAD.md) - Development notes and progress
+```rust
+impl<V> HotTree<V> {
+    fn new() -> Self;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+    fn memory_usage(&self) -> usize;
+    fn shrink_to_fit(&mut self);
+}
 
-## Future Work
+impl<V: Clone> HotTree<V> {
+    fn insert(&mut self, key: &[u8], value: V) -> Option<V>;
+    fn get(&self, key: &[u8]) -> Option<&V>;
+    fn contains_key(&self, key: &[u8]) -> bool;
+    fn remove(&mut self, key: &[u8]) -> Option<V>;
+    fn iter(&self) -> Iter<'_, V>;
+    fn range<R: RangeBounds<&[u8]>>(&self, range: R) -> Range<'_, V, R>;
+}
+```
 
-- [ ] Hybrid store combining FST + mutable delta
-- [ ] Incremental FST updates
-- [ ] SIMD optimizations for Node16 lookup
-- [ ] Concurrent writes with epoch-based reclamation
+## How It Works
+
+HotTree uses a binary trie (BiNode structure) where:
+
+- **Internal nodes** split on individual bit positions in the key
+- **Keys and values** are stored inline in contiguous arenas
+- **48-bit pointers** reduce per-pointer overhead while supporting up to 128TB
+
+This trades some CPU time for significant memory savings. Lookups are O(k) where k is key length in bits. The structure is ideal for applications with large key sets that need to minimize RAM usage.
+
+## Limitations
+
+- Keys are `&[u8]` (byte slices), not generic
+- Values require `Clone` for retrieval
+- `remove()` tombstones entries but doesn't reclaim space (rebuild tree for compaction)
+- `iter()` and `range()` traverse the full tree; O(n) not O(log n + k)
 
 ## License
 
