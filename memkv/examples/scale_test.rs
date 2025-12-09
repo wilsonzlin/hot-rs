@@ -20,10 +20,12 @@ fn get_allocated() -> usize {
 
 use clap::{Parser, ValueEnum};
 use memkv::{FastArt, InlineHot, HOT};
+use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::panic;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -139,6 +141,13 @@ fn print_stats(name: &str, stats: &Stats) {
     println!(
         "{:<12} {:>12.1} {:>10.1} {:>10.1} {:>12.0} {:>10.0} {:>6}",
         name, total_mb, overhead, index, insert_rate, lookup_rate, ok
+    );
+}
+
+fn print_skipped(name: &str, reason: &str) {
+    println!(
+        "{:<12} {:>12} {:>10} {:>10} {:>12} {:>10} {:>6}",
+        name, "-", "-", "-", "-", "-", reason
     );
 }
 
@@ -314,8 +323,11 @@ fn main() -> io::Result<()> {
     println!("Loading URLs from {}...", args.path);
 
     // Load all URLs into memory first (not counted in benchmark)
-    let urls = load_urls(&args.path)?;
+    let mut urls = load_urls(&args.path)?;
     let raw_bytes: usize = urls.iter().map(|u| u.len()).sum();
+
+    println!("Shuffling...");
+    urls.shuffle(&mut rand::thread_rng());
 
     // Force GC before benchmarks to establish clean baseline
     let _ = get_allocated();
@@ -323,13 +335,28 @@ fn main() -> io::Result<()> {
     print_table_header(&args.path, urls.len(), raw_bytes, verify);
 
     for structure in &args.structures {
-        let stats = match structure {
-            Structure::BTreeMap => run_btree(&urls, verify),
-            Structure::InlineHot => run_inline_hot(&urls, verify),
-            Structure::Hot => run_hot(&urls, verify),
-            Structure::FastArt => run_fast_art(&urls, verify),
-        };
-        print_stats(structure.name(), &stats);
+        let name = structure.name();
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            match structure {
+                Structure::BTreeMap => run_btree(&urls, verify),
+                Structure::InlineHot => run_inline_hot(&urls, verify),
+                Structure::Hot => run_hot(&urls, verify),
+                Structure::FastArt => run_fast_art(&urls, verify),
+            }
+        }));
+        match result {
+            Ok(stats) => print_stats(name, &stats),
+            Err(e) => {
+                let reason = if let Some(s) = e.downcast_ref::<&str>() {
+                    if s.contains("addressable") { "u32" } else { "panic" }
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    if s.contains("addressable") { "u32" } else { "panic" }
+                } else {
+                    "panic"
+                };
+                print_skipped(name, reason);
+            }
+        }
     }
 
     println!("{}", "─".repeat(74));

@@ -97,9 +97,10 @@ cargo run --release --example scale_test
 
 **InlineHot** uses a Height Optimized Trie with:
 - BiNodes (binary splits on discriminating bits)
-- 32-bit pointers (saves 4 bytes vs 64-bit)
+- 48-bit pointers (saves 2 bytes vs 64-bit, supports up to 128TB)
 - Inline value storage (no separate leaf struct)
-- 12 B/K index overhead
+- ~14 B/K index overhead
+- Tested with 282M URLs (16GB raw data)
 
 **FastArt** uses Adaptive Radix Tree with:
 - Four node sizes (4, 16, 48, 256 children)

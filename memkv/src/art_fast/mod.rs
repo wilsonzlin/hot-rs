@@ -913,50 +913,58 @@ impl FastArt {
         new_node
     }
     
-    unsafe fn free_recursive(node: TaggedPtr) {
-        if node.is_null() {
+    unsafe fn free_iterative(root: TaggedPtr) {
+        if root.is_null() {
             return;
         }
-        
-        if node.is_leaf() {
-            Leaf::free(node.as_leaf());
-            return;
-        }
-        
-        let header = &*(node.as_node().as_ptr() as *const NodeHeader);
-        match header.node_type {
-            NodeType::Node4 => {
-                let n = &*(node.as_node().as_ptr() as *const Node4);
-                for i in 0..n.header.num_children as usize {
-                    Self::free_recursive(n.children[i]);
-                }
-                Node4::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node4));
+
+        let mut stack = vec![root];
+
+        while let Some(node) = stack.pop() {
+            if node.is_null() {
+                continue;
             }
-            NodeType::Node16 => {
-                let n = &*(node.as_node().as_ptr() as *const Node16);
-                for i in 0..n.header.num_children as usize {
-                    Self::free_recursive(n.children[i]);
-                }
-                Node16::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node16));
+
+            if node.is_leaf() {
+                Leaf::free(node.as_leaf());
+                continue;
             }
-            NodeType::Node48 => {
-                let n = &*(node.as_node().as_ptr() as *const Node48);
-                for byte in 0..256 {
-                    let idx = n.keys[byte];
-                    if idx != 0 {
-                        Self::free_recursive(n.children[(idx - 1) as usize]);
+
+            let header = &*(node.as_node().as_ptr() as *const NodeHeader);
+            match header.node_type {
+                NodeType::Node4 => {
+                    let n = &*(node.as_node().as_ptr() as *const Node4);
+                    for i in 0..n.header.num_children as usize {
+                        stack.push(n.children[i]);
                     }
+                    Node4::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node4));
                 }
-                Node48::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node48));
-            }
-            NodeType::Node256 => {
-                let n = &*(node.as_node().as_ptr() as *const Node256);
-                for child in n.children.iter() {
-                    if !child.is_null() {
-                        Self::free_recursive(*child);
+                NodeType::Node16 => {
+                    let n = &*(node.as_node().as_ptr() as *const Node16);
+                    for i in 0..n.header.num_children as usize {
+                        stack.push(n.children[i]);
                     }
+                    Node16::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node16));
                 }
-                Node256::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node256));
+                NodeType::Node48 => {
+                    let n = &*(node.as_node().as_ptr() as *const Node48);
+                    for byte in 0..256 {
+                        let idx = n.keys[byte];
+                        if idx != 0 {
+                            stack.push(n.children[(idx - 1) as usize]);
+                        }
+                    }
+                    Node48::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node48));
+                }
+                NodeType::Node256 => {
+                    let n = &*(node.as_node().as_ptr() as *const Node256);
+                    for child in n.children.iter() {
+                        if !child.is_null() {
+                            stack.push(*child);
+                        }
+                    }
+                    Node256::free(NonNull::new_unchecked(node.as_node().as_ptr() as *mut Node256));
+                }
             }
         }
     }
@@ -971,7 +979,7 @@ impl Default for FastArt {
 impl Drop for FastArt {
     fn drop(&mut self) {
         if !self.root.is_null() {
-            unsafe { Self::free_recursive(self.root); }
+            unsafe { Self::free_iterative(self.root); }
         }
     }
 }

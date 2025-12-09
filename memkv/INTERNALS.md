@@ -195,16 +195,21 @@ This eliminates the separate Leaf struct:
 - HOT Leaf: `{ key_off: u32, key_len: u16, value: u64 }` = 14 bytes
 - InlineHot: 2 bytes length prefix only
 
-Net result: 12 B/K index overhead (10 BiNodes + 2 length prefix).
+Net result: ~16 B/K index overhead (14 BiNodes + 2 length prefix) with 48-bit pointers.
+This increases slightly from the original 12 B/K (with 32-bit pointers), but enables
+handling datasets of unlimited size (tested with 282M URLs, 16GB raw data).
 
-### Why 32-bit Pointers
+### Why 48-bit Pointers
 
-Both InlineHot and HOT use `u32` offsets instead of `u64` pointers:
-- Saves 4 bytes per pointer (50% reduction)
-- Limits addressable space to 4GB per arena
-- For 100M keys averaging 50 bytes: fits comfortably
+Both InlineHot and HOT use 6-byte (48-bit) offsets instead of 8-byte `u64` pointers:
+- Saves 2 bytes per pointer (25% reduction vs u64)
+- Addresses up to 128TB (2^47 bytes with high bit reserved for leaf flag)
+- Supports datasets of any practical size (tested with 282M URLs, 16GB raw data)
 
-We tried u16 pointers (2 bytes) but hit limits at ~32K entries.
+Evolution:
+- Original design used u32 (4-byte) pointers, limiting to 4GB
+- u16 pointers (2 bytes) hit limits at ~32K entries
+- u48 pointers provide excellent balance: only 2 bytes more than u32, but unlimited scale
 
 ### Why Not Hybrid Delta+Frozen
 
@@ -225,17 +230,18 @@ Simple solutions that work > complex architectures that might work better.
 pub struct InlineHot {
     key_data: Vec<u8>,   // [len:2][key][value:8]... contiguous
     nodes: Vec<u8>,      // BiNodes packed contiguously
-    root: Ptr,           // 32-bit tagged pointer
+    root: Ptr,           // 48-bit tagged pointer (stored as u64)
     count: usize,
 }
 ```
 
-**BiNode layout:** `[bit_pos:2][left:4][right:4]` = 10 bytes
+**BiNode layout:** `[bit_pos:2][left:6][right:6]` = 14 bytes
 
-**Ptr encoding (32-bit tagged pointer):**
-- Bit 31 = 1: leaf pointer (bits 0-30 = offset into key_data)
-- Bit 31 = 0: node pointer (bits 0-30 = offset into nodes)
-- 0xFFFFFFFF: null
+**Ptr encoding (48-bit tagged pointer):**
+- Bit 47 = 1: leaf pointer (bits 0-46 = offset into key_data)
+- Bit 47 = 0: node pointer (bits 0-46 = offset into nodes)
+- 0xFFFF_FFFF_FFFF: null
+- Stored as 6 bytes in BiNodes for memory efficiency
 
 **Insert algorithm:**
 1. Walk tree following discriminating bits
@@ -552,20 +558,23 @@ Variable-length integers for lengths and small values:
 ### InlineHot Core Types
 
 ```rust
-// 32-bit tagged pointer
-struct Ptr(u32);
-const LEAF_BIT: u32 = 1 << 31;
+// 48-bit tagged pointer (stored as u64, serialized to 6 bytes)
+struct Ptr(u64);
+const LEAF_BIT: u64 = 0x8000_0000_0000;    // Bit 47
+const OFFSET_MASK: u64 = 0x7FFF_FFFF_FFFF; // Lower 47 bits
 
 impl Ptr {
     fn is_leaf(self) -> bool { self.0 & LEAF_BIT != 0 }
-    fn leaf_off(self) -> u32 { self.0 & !LEAF_BIT }
-    fn node_off(self) -> u32 { self.0 }
+    fn leaf_off(self) -> u64 { self.0 & OFFSET_MASK }
+    fn node_off(self) -> u64 { self.0 & OFFSET_MASK }
+    fn to_bytes(self) -> [u8; 6];   // Serialize to 6 bytes for storage
+    fn from_bytes([u8; 6]) -> Self; // Deserialize from 6 bytes
 }
 
 // Main structure
 pub struct InlineHot {
     key_data: Vec<u8>,  // [len:2][key][value:8]...
-    nodes: Vec<u8>,     // [bit_pos:2][left:4][right:4]...
+    nodes: Vec<u8>,     // [bit_pos:2][left:6][right:6]... (14 bytes each)
     root: Ptr,
     count: usize,
 }

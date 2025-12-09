@@ -5,28 +5,56 @@
 //!
 //! Layout: key_data = [...[len:2][key bytes][value:8]...]
 //! Overhead per key: 2 (len) + tree structure
-//! With compound nodes: ~12 B/K total
+//! With compound nodes: ~14 B/K total (using 6-byte pointers for large datasets)
 
-/// Pointer: 4 bytes, high bit = leaf flag
+/// Pointer: 6 bytes (48-bit), high bit = leaf flag
 /// Leaf: points directly into key_data
 /// Node: points into nodes array
+///
+/// We use u64 internally but only store/use 48 bits (6 bytes).
+/// This allows addressing up to 128TB (2^47 bytes) which is sufficient for any dataset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Ptr(u32);
+struct Ptr(u64);
 
 impl Ptr {
-    const LEAF_BIT: u32 = 0x8000_0000;
-    const NULL: Ptr = Ptr(u32::MAX);
-    
-    #[inline] fn leaf(off: u32) -> Self { Self(off | Self::LEAF_BIT) }
-    #[inline] fn node(off: u32) -> Self { Self(off) }
-    #[inline] fn is_null(self) -> bool { self.0 == u32::MAX }
+    /// High bit of 48-bit value (bit 47)
+    const LEAF_BIT: u64 = 0x0000_8000_0000_0000;
+    /// Mask for the offset portion (lower 47 bits)
+    const OFFSET_MASK: u64 = 0x0000_7FFF_FFFF_FFFF;
+    /// Maximum addressable offset (2^47 - 1 = 128TB)
+    const MAX_OFFSET: u64 = 0x0000_7FFF_FFFF_FFFF;
+    /// Null pointer (all 48 bits set)
+    const NULL: Ptr = Ptr(0x0000_FFFF_FFFF_FFFF);
+
+    #[inline] fn leaf(off: u64) -> Self {
+        debug_assert!(off <= Self::MAX_OFFSET, "leaf offset exceeds 47-bit limit");
+        Self(off | Self::LEAF_BIT)
+    }
+    #[inline] fn node(off: u64) -> Self {
+        debug_assert!(off <= Self::MAX_OFFSET, "node offset exceeds 47-bit limit");
+        Self(off)
+    }
+    #[inline] fn is_null(self) -> bool { self.0 == Self::NULL.0 }
     #[inline] fn is_leaf(self) -> bool { !self.is_null() && (self.0 & Self::LEAF_BIT != 0) }
     #[inline] #[allow(dead_code)] fn is_node(self) -> bool { !self.is_null() && (self.0 & Self::LEAF_BIT == 0) }
-    #[inline] fn leaf_off(self) -> u32 { self.0 & !Self::LEAF_BIT }
-    #[inline] fn node_off(self) -> u32 { self.0 }
+    #[inline] fn leaf_off(self) -> u64 { self.0 & Self::OFFSET_MASK }
+    #[inline] fn node_off(self) -> u64 { self.0 & Self::OFFSET_MASK }
+
+    /// Convert to 6-byte representation for storage
+    #[inline] fn to_bytes(self) -> [u8; 6] {
+        let bytes = self.0.to_le_bytes();
+        [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]]
+    }
+
+    /// Create from 6-byte representation
+    #[inline] fn from_bytes(bytes: [u8; 6]) -> Self {
+        let val = u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0]);
+        Self(val)
+    }
 }
 
-const BINODE_SIZE: usize = 10;
+/// BiNode size: [bit_pos:2][left:6][right:6] = 14 bytes
+const BINODE_SIZE: usize = 14;
 
 pub struct InlineHot {
     /// Keys + values stored inline: [len:2][key][value:8]...
@@ -52,22 +80,24 @@ impl InlineHot {
     #[inline] pub fn len(&self) -> usize { self.count }
     #[inline] pub fn is_empty(&self) -> bool { self.count == 0 }
 
-    fn store_entry(&mut self, key: &[u8], value: u64) -> u32 {
-        let off = self.key_data.len() as u32;
+    fn store_entry(&mut self, key: &[u8], value: u64) -> u64 {
+        let off = self.key_data.len();
+        assert!(off as u64 <= Ptr::MAX_OFFSET - key.len() as u64 - 10,
+            "InlineHot: key_data exceeds 47-bit (128TB) addressable space");
         let len = key.len() as u16;
         self.key_data.extend_from_slice(&len.to_le_bytes());
         self.key_data.extend_from_slice(key);
         self.key_data.extend_from_slice(&value.to_le_bytes());
-        off
+        off as u64
     }
 
-    fn get_key(&self, off: u32) -> &[u8] {
+    fn get_key(&self, off: u64) -> &[u8] {
         let o = off as usize;
         let len = u16::from_le_bytes([self.key_data[o], self.key_data[o + 1]]) as usize;
         &self.key_data[o + 2..o + 2 + len]
     }
 
-    fn get_value(&self, off: u32) -> u64 {
+    fn get_value(&self, off: u64) -> u64 {
         let o = off as usize;
         let len = u16::from_le_bytes([self.key_data[o], self.key_data[o + 1]]) as usize;
         let val_off = o + 2 + len;
@@ -79,46 +109,58 @@ impl InlineHot {
         ])
     }
 
-    fn set_value(&mut self, off: u32, value: u64) {
+    fn set_value(&mut self, off: u64, value: u64) {
         let o = off as usize;
         let len = u16::from_le_bytes([self.key_data[o], self.key_data[o + 1]]) as usize;
         let val_off = o + 2 + len;
         self.key_data[val_off..val_off + 8].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn alloc_binode(&mut self) -> u32 {
-        let off = self.nodes.len() as u32;
-        self.nodes.resize(self.nodes.len() + BINODE_SIZE, 0);
-        off
+    fn alloc_binode(&mut self) -> u64 {
+        let off = self.nodes.len();
+        assert!((off as u64) <= Ptr::MAX_OFFSET - BINODE_SIZE as u64,
+            "InlineHot: nodes exceeds 47-bit (128TB) addressable space");
+        self.nodes.resize(off + BINODE_SIZE, 0);
+        off as u64
     }
 
-    fn r16(&self, o: u32) -> u16 {
-        u16::from_le_bytes([self.nodes[o as usize], self.nodes[o as usize + 1]])
+    fn r16(&self, o: u64) -> u16 {
+        let i = o as usize;
+        u16::from_le_bytes([self.nodes[i], self.nodes[i + 1]])
     }
-    fn w16(&mut self, o: u32, v: u16) {
+    fn w16(&mut self, o: u64, v: u16) {
+        let i = o as usize;
         let b = v.to_le_bytes();
-        self.nodes[o as usize] = b[0];
-        self.nodes[o as usize + 1] = b[1];
-    }
-    fn r32(&self, o: u32) -> u32 {
-        let i = o as usize;
-        u32::from_le_bytes([self.nodes[i], self.nodes[i+1], self.nodes[i+2], self.nodes[i+3]])
-    }
-    fn w32(&mut self, o: u32, v: u32) {
-        let i = o as usize;
-        self.nodes[i..i+4].copy_from_slice(&v.to_le_bytes());
+        self.nodes[i] = b[0];
+        self.nodes[i + 1] = b[1];
     }
 
-    fn binode_bit(&self, off: u32) -> u16 { self.r16(off) }
-    fn binode_left(&self, off: u32) -> Ptr { Ptr(self.r32(off + 2)) }
-    fn binode_right(&self, off: u32) -> Ptr { Ptr(self.r32(off + 6)) }
-    fn set_binode(&mut self, off: u32, bit: u16, left: Ptr, right: Ptr) {
-        self.w16(off, bit);
-        self.w32(off + 2, left.0);
-        self.w32(off + 6, right.0);
+    /// Read a 6-byte pointer from nodes at offset o
+    fn r48(&self, o: u64) -> Ptr {
+        let i = o as usize;
+        Ptr::from_bytes([
+            self.nodes[i], self.nodes[i+1], self.nodes[i+2],
+            self.nodes[i+3], self.nodes[i+4], self.nodes[i+5]
+        ])
     }
-    fn set_binode_left(&mut self, off: u32, left: Ptr) { self.w32(off + 2, left.0); }
-    fn set_binode_right(&mut self, off: u32, right: Ptr) { self.w32(off + 6, right.0); }
+
+    /// Write a 6-byte pointer to nodes at offset o
+    fn w48(&mut self, o: u64, ptr: Ptr) {
+        let i = o as usize;
+        let bytes = ptr.to_bytes();
+        self.nodes[i..i+6].copy_from_slice(&bytes);
+    }
+
+    fn binode_bit(&self, off: u64) -> u16 { self.r16(off) }
+    fn binode_left(&self, off: u64) -> Ptr { self.r48(off + 2) }
+    fn binode_right(&self, off: u64) -> Ptr { self.r48(off + 8) }
+    fn set_binode(&mut self, off: u64, bit: u16, left: Ptr, right: Ptr) {
+        self.w16(off, bit);
+        self.w48(off + 2, left);
+        self.w48(off + 8, right);
+    }
+    fn set_binode_left(&mut self, off: u64, left: Ptr) { self.w48(off + 2, left); }
+    fn set_binode_right(&mut self, off: u64, right: Ptr) { self.w48(off + 8, right); }
 
     #[inline]
     fn bit_at(key: &[u8], pos: u16) -> u8 {
@@ -246,11 +288,11 @@ impl InlineHot {
     pub fn memory_usage(&self) -> usize {
         self.key_data.capacity() + self.nodes.capacity()
     }
-    
+
     pub fn memory_usage_actual(&self) -> usize {
         self.key_data.len() + self.nodes.len()
     }
-    
+
     pub fn shrink_to_fit(&mut self) {
         self.key_data.shrink_to_fit();
         self.nodes.shrink_to_fit();
@@ -301,5 +343,30 @@ mod tests {
             let key = format!("key{:05}", i);
             assert_eq!(t.get(key.as_bytes()), Some(i), "Failed at {}", i);
         }
+    }
+
+    #[test]
+    fn test_ptr_roundtrip() {
+        // Test leaf pointer roundtrip
+        let leaf = Ptr::leaf(0x123456789ABC);
+        let bytes = leaf.to_bytes();
+        let restored = Ptr::from_bytes(bytes);
+        assert_eq!(leaf, restored);
+        assert!(restored.is_leaf());
+        assert_eq!(restored.leaf_off(), 0x123456789ABC);
+
+        // Test node pointer roundtrip
+        let node = Ptr::node(0x7FFF_FFFF_FFFF);
+        let bytes = node.to_bytes();
+        let restored = Ptr::from_bytes(bytes);
+        assert_eq!(node, restored);
+        assert!(restored.is_node());
+        assert_eq!(restored.node_off(), 0x7FFF_FFFF_FFFF);
+
+        // Test null pointer
+        let null = Ptr::NULL;
+        let bytes = null.to_bytes();
+        let restored = Ptr::from_bytes(bytes);
+        assert!(restored.is_null());
     }
 }
