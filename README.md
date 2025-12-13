@@ -2,7 +2,7 @@
 
 A memory-efficient ordered map for Rust using a Height Optimized Trie (HOT).
 
-`HotTree` provides similar functionality to `BTreeMap<Vec<u8>, V>` but uses **~33% less memory** for typical workloads with byte-string keys.
+`HotTree` provides similar functionality to `BTreeMap<Vec<u8>, V>` but uses **40-70% less memory** for typical workloads with byte-string keys.
 
 ## Usage
 
@@ -32,18 +32,14 @@ for (key, value) in tree.iter() {
 
 ## Memory Efficiency
 
-Benchmark with 500K URL keys (shuffled random inserts):
+Benchmarks on URL datasets (shuffled random inserts):
 
-| Structure | Memory | Overhead/Key |
-|-----------|--------|--------------|
-| `BTreeMap<Vec<u8>, u64>` | 52 MB | 57.7 bytes |
-| `HotTree<u64>` | 35 MB | 22.7 bytes |
+| Scale | BTreeMap | HotTree | Improvement |
+|-------|----------|---------|-------------|
+| 1M URLs | 117 MB | 61 MB | **1.9x** |
+| 282M URLs | 34.5 GB | 20.1 GB | **1.7x** |
 
-Run the benchmark yourself:
-
-```bash
-cargo run --release --example benchmark
-```
+The improvement scales well from small to very large datasets.
 
 ## API
 
@@ -62,17 +58,17 @@ impl<V: Clone> HotTree<V> {
     fn contains_key(&self, key: &[u8]) -> bool;
     fn remove(&mut self, key: &[u8]) -> Option<V>;
     fn iter(&self) -> Iter<'_, V>;
-    fn range<R: RangeBounds<&[u8]>>(&self, range: R) -> Range<'_, V, R>;
 }
 ```
 
 ## How It Works
 
-HotTree uses a binary trie (BiNode structure) where:
+HotTree uses a binary PATRICIA trie where:
 
-- **Internal nodes** split on individual bit positions in the key
-- **Keys and values** are stored inline in contiguous arenas
-- **48-bit pointers** reduce per-pointer overhead while supporting up to 128TB
+- **Internal nodes** split on individual bit positions (discriminators)
+- **Keys** are stored in a contiguous arena with adaptive prefix compression
+- **Prefix compression** automatically learns common prefixes from delimiters (/, :, etc.)
+- **31-bit indices** support up to 2 billion entries
 
 This trades some CPU time for significant memory savings. Lookups are O(k) where k is key length in bits. The structure is ideal for applications with large key sets that need to minimize RAM usage.
 
@@ -80,8 +76,8 @@ This trades some CPU time for significant memory savings. Lookups are O(k) where
 
 - Keys are `&[u8]` (byte slices), not generic
 - Values require `Clone` for retrieval
-- `remove()` tombstones entries but doesn't reclaim space (rebuild tree for compaction)
-- `iter()` and `range()` traverse the full tree; O(n) not O(log n + k)
+- `remove()` tombstones entries but doesn't reclaim space
+- Build time is ~3x slower than BTreeMap (53 min vs 17 min for 282M keys)
 
 ## License
 
