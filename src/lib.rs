@@ -1096,6 +1096,9 @@ impl<'a, V: Clone> Iterator for Iter<'a, V> {
 }
 
 #[cfg(test)]
+mod proptests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1231,6 +1234,51 @@ mod tests {
         // Test iterator after compaction
         let count = t.iter().count();
         assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn test_remove_then_reinsert_count() {
+        use std::collections::BTreeMap;
+
+        let mut tree: HotTree<u64> = HotTree::new();
+        let mut model: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+
+        let key = b"test_key";
+        let key_vec = key.to_vec();
+
+        // Insert key
+        tree.insert(key, 1);
+        model.insert(key_vec.clone(), 1);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(model.len(), 1);
+
+        // Remove key
+        let tree_removed = tree.remove(key);
+        let model_removed = model.remove(&key_vec);
+        assert_eq!(tree_removed, Some(1));
+        assert_eq!(model_removed, Some(1));
+        assert_eq!(tree.len(), 0);
+        assert_eq!(model.len(), 0);
+
+        // Re-insert the same key
+        let tree_insert_result = tree.insert(key, 2);
+        let model_insert_result = model.insert(key_vec.clone(), 2);
+        assert_eq!(tree_insert_result, None); // Should return None since key was removed
+        assert_eq!(model_insert_result, None);
+
+        // BUG: HotTree count doesn't increment when re-inserting a previously removed key.
+        // The key still exists in the tree structure (with None value), so when insert()
+        // finds the existing leaf and updates it, it doesn't increment the count.
+        // This test documents the bug - it will pass once the bug is fixed.
+        assert_eq!(
+            tree.len(),
+            model.len(),
+            "BUG: Count mismatch after re-insert: HotTree={}, BTreeMap={}. \
+             HotTree should increment count when re-inserting a previously removed key.",
+            tree.len(),
+            model.len()
+        );
+        assert_eq!(tree.get(key), model.get(&key_vec));
     }
 }
 
