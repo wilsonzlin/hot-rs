@@ -2,7 +2,7 @@
 
 A memory-efficient ordered map for Rust using a Height Optimized Trie (HOT).
 
-`HotTree` provides similar functionality to `BTreeMap<Vec<u8>, V>` but uses **40-70% less memory** for typical workloads with byte-string keys.
+`HotTree` provides similar functionality to `BTreeMap<Vec<u8>, V>` but is optimized for **minimum RAM per key** on large sets of string-like byte keys (e.g. URLs).
 
 ## Usage
 
@@ -36,8 +36,8 @@ Benchmarks on URL datasets (shuffled random inserts):
 
 | Scale | BTreeMap | HotTree | Improvement |
 |-------|----------|---------|-------------|
-| 1M URLs | 117 MB | 61 MB | **1.9x** |
-| 282M URLs | 34.5 GB | 20.1 GB | **1.7x** |
+| 1M URLs | 117 MB | 48.6 MB | **2.4x** |
+| 282M URLs | 34.5 GB | ~19–20 GB | **~1.7–1.8x** |
 
 The improvement scales well from small to very large datasets.
 
@@ -45,19 +45,19 @@ The improvement scales well from small to very large datasets.
 
 ```rust
 impl<V> HotTree<V> {
-    fn new() -> Self;
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool;
-    fn memory_usage(&self) -> usize;
-    fn shrink_to_fit(&mut self);
-}
+    pub fn new() -> Self;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
 
-impl<V: Clone> HotTree<V> {
-    fn insert(&mut self, key: &[u8], value: V) -> Option<V>;
-    fn get(&self, key: &[u8]) -> Option<&V>;
-    fn contains_key(&self, key: &[u8]) -> bool;
-    fn remove(&mut self, key: &[u8]) -> Option<V>;
-    fn iter(&self) -> Iter<'_, V>;
+    pub fn insert(&mut self, key: &[u8], value: V) -> Option<V>;
+    pub fn get(&self, key: &[u8]) -> Option<&V>;
+    pub fn contains_key(&self, key: &[u8]) -> bool;
+    pub fn remove(&mut self, key: &[u8]) -> Option<V>;
+    pub fn iter(&self) -> Iter<'_, V>;
+
+    pub fn memory_usage(&self) -> usize;
+    pub fn shrink_to_fit(&mut self);
+    pub fn compact(&mut self) -> usize;
 }
 ```
 
@@ -65,19 +65,19 @@ impl<V: Clone> HotTree<V> {
 
 HotTree uses a binary PATRICIA trie where:
 
-- **Internal nodes** split on individual bit positions (discriminators)
+- **Internal nodes** split on individual bit positions (discriminators), combined into HOT-style compound nodes (up to 32-way)
 - **Keys** are stored in a contiguous arena with adaptive prefix compression
 - **Prefix compression** automatically learns common prefixes from delimiters (/, :, etc.)
-- **31-bit indices** support up to 2 billion entries
+- **Node pointers** are stored as packed 40-bit tagged offsets (5 bytes per child pointer)
 
 This trades some CPU time for significant memory savings. Lookups are O(k) where k is key length in bits. The structure is ideal for applications with large key sets that need to minimize RAM usage.
 
 ## Limitations
 
 - Keys are `&[u8]` (byte slices), not generic
-- Values require `Clone` for retrieval
-- `remove()` tombstones entries but doesn't reclaim space
-- Build time is ~3x slower than BTreeMap (53 min vs 17 min for 282M keys)
+- Keys that differ only by trailing `0x00` bytes are not distinguishable (optimized for “string-like” keys)
+- `remove()` does not reclaim leaf/key bytes in the append-only leaf arena
+- `iter()` reconstructs keys into fresh `Vec<u8>` allocations
 
 ## License
 

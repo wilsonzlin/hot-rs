@@ -12,6 +12,7 @@ categories = ["data-structures"]
 
 [dev-dependencies]
 rand = "0.8"
+proptest = "1"
 
 [profile.release]
 lto = true
